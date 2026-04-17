@@ -1,3 +1,3 @@
-export * from './types';
-export * from './client';
-export * from './providers/minimax.provider';
+export * from './types.js';
+export * from './client.js';
+export * from './providers/minimax.provider.js';

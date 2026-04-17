@@ -1,4 +1,4 @@
-import { LLMConfig, BaseLLMProvider } from '../types';
+import { LLMConfig, BaseLLMProvider } from '../types.js';
 
 export class MinimaxProvider implements BaseLLMProvider {
   constructor(private config: LLMConfig) {}

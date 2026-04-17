@@ -7,9 +7,9 @@ import {
   CharacterState,
   ImageGenerationParams,
   VoiceGenerationParams
-} from "./types";
-import { robustJsonParse } from "./utils/json.utils";
-import { MinimaxProvider } from "./providers/minimax.provider";
+} from "./types.js";
+import { robustJsonParse } from "./utils/json.utils.js";
+import { MinimaxProvider } from "./providers/minimax.provider.js";
 
 export class CyberSoulClient {
   private config: CyberSoulClientConfig;

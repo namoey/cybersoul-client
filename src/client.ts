@@ -4,6 +4,9 @@ import {
   DispatcherIntent,
   InteractResponse,
   BaseLLMProvider,
+  CharacterState,
+  ImageGenerationParams,
+  VoiceGenerationParams
 } from "./types";
 import { robustJsonParse } from "./utils/json.utils";
 import { MinimaxProvider } from "./providers/minimax.provider";
@@ -23,19 +26,32 @@ export class CyberSoulClient {
     }
   }
 
-  private async fetchRemoteState() {
-    const url = `${this.config.backendUrl}/api/v1/cyber-soul/state`;
-    const res = await fetch(url, {
-      headers: { Authorization: `Bearer ${this.config.characterKey}` },
-    });
-    if (!res.ok) throw new Error("Failed to fetch character state");
-    const json = await res.json();
-    return json.data;
+  /**
+   * Internal wrapper for fetch that automatically injects the backend URL and Character Auth token.
+   */
+  private async apiFetch(endpoint: string, options: RequestInit = {}): Promise<Response> {
+    const url = `${this.config.backendUrl}${endpoint}`;
+    const headers = {
+      Authorization: `Bearer ${this.config.characterKey}`,
+      "Content-Type": "application/json",
+      ...(options.headers || {}),
+    };
+    return fetch(url, { ...options, headers });
   }
 
-  private async updateDynamicContext(
+  /**
+   * Fetches the current dynamic context and daily state.
+   */
+  public async getState(): Promise<CharacterState> {
+    return this.fetchRemoteState();
+  }
+
+  /**
+   * Updates the character's relationship temperature or mood.
+   */
+  public async updateDynamicContext(
     stateUpdate: DispatcherIntent["stateUpdate"],
-  ) {
+  ): Promise<void> {
     if (!stateUpdate) return;
     
     // Map TS schema intent (temperatureDelta) to match Backend payload schema (temperature)
@@ -45,25 +61,87 @@ export class CyberSoulClient {
       delete payload.temperatureDelta;
     }
 
-    const url = `${this.config.backendUrl}/api/v1/cyber-soul/characters/dynamic-context`;
-    await fetch(url, {
+    await this.apiFetch("/api/v1/cyber-soul/characters/dynamic-context", {
       method: "PATCH",
-      headers: {
-        Authorization: `Bearer ${this.config.characterKey}`,
-        "Content-Type": "application/json",
-      },
       body: JSON.stringify(payload),
-    }).catch((e) => console.error("Failed to update dynamic context", e)); // non-blocking error handler
+    }).catch((e: any) => console.error("Failed to update dynamic context", e)); // non-blocking error handler
+  }
+
+  /**
+   * Manually generate an image of the character outside of chat flow.
+   */
+  public async generateImage(params: ImageGenerationParams): Promise<{ imageUrl: string }> {
+    return this.generatePrimitive("image", params);
+  }
+
+  /**
+   * Manually synthesize voice audio outside of chat flow.
+   */
+  public async generateVoice(params: VoiceGenerationParams): Promise<{ audioUrl: string, durationSec?: number }> {
+    return this.generatePrimitive("voice", params);
+  }
+
+  /**
+   * Gift a new outfit to the character's wardrobe inventory.
+   */
+  public async giftOutfit(descriptionText: string): Promise<void> {
+    const res = await this.apiFetch("/api/v1/cyber-soul/characters/gift-outfit", {
+      method: "POST",
+      body: JSON.stringify({ text: descriptionText }),
+    });
+    if (!res.ok) throw new Error("Failed to gift outfit");
+  }
+
+  /**
+   * Bootstrap character profile from OpenClaw workspace files.
+   */
+  public async bootstrapCharacter(workspaceFiles: Record<string, string>): Promise<void> {
+    const res = await this.apiFetch("/api/v1/cyber-soul/characters/bootstrap", {
+      method: "POST",
+      body: JSON.stringify({ workspace_files: workspaceFiles }),
+    });
+    if (!res.ok) throw new Error("Failed to bootstrap character");
+  }
+
+  /**
+   * Instructs the backend to generate the daily script/plan for the character.
+   * Can be triggered by local Cron systems like OpenClaw.
+   */
+  public async generateDailyScript(): Promise<void> {
+    const res = await this.apiFetch("/api/v1/cyber-soul/daily-script/generate", {
+      method: "POST",
+    });
+    if (!res.ok) throw new Error("Failed to generate daily script");
+  }
+
+  private async fetchRemoteState() {
+    const res = await this.apiFetch("/api/v1/cyber-soul/state");
+    if (!res.ok) throw new Error("Failed to fetch character state");
+    const json = await res.json();
+    return json.data;
+  }
+
+  private async _updateDynamicContextInternal(
+    stateUpdate: DispatcherIntent["stateUpdate"],
+  ): Promise<void> {
+    if (!stateUpdate) return;
+    
+    // Map TS schema intent (temperatureDelta) to match Backend payload schema (temperature)
+    const payload: any = { ...stateUpdate };
+    if (payload.temperatureDelta !== undefined) {
+      payload.temperature = payload.temperatureDelta;
+      delete payload.temperatureDelta;
+    }
+
+    await this.apiFetch("/api/v1/cyber-soul/characters/dynamic-context", {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }).catch((e: any) => console.error("Failed to update dynamic context", e)); // non-blocking error handler
   }
 
   private async generatePrimitive(type: "image" | "voice", payload: any) {
-    const url = `${this.config.backendUrl}/api/v1/cyber-soul/${type}/generate`;
-    const res = await fetch(url, {
+    const res = await this.apiFetch(`/api/v1/cyber-soul/${type}/generate`, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${this.config.characterKey}`,
-        "Content-Type": "application/json",
-      },
       body: JSON.stringify(payload),
     });
     if (!res.ok) throw new Error(`Failed to generate ${type}`);
@@ -181,8 +259,8 @@ Note: If "imageParams", "voiceArgs", or "stateUpdate" are not needed, set their 
       console.log("[CyberSoulClient] Parsed Intent:", parsedIntent);
 
       // 4. Update Backend State async
-      if (parsedIntent.stateUpdate) {
-        this.updateDynamicContext(parsedIntent.stateUpdate);
+      if (parsedIntent && parsedIntent.stateUpdate) {
+        this._updateDynamicContextInternal(parsedIntent.stateUpdate);
       }
 
       // Fire text ready callback if provided

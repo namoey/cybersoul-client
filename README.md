@@ -1,6 +1,6 @@
-# cybersoul-client
+# @space3-npm/cybersoul-client
 
-`cybersoul-client` is the official TypeScript client SDK for interacting with the Cyber-Soul backend service. It acts as the "Brain" orchestrator on the client side, converting your local text inputs into rich, multi-modal outputs (text, voice, and image) driven by an LLM architecture.
+`@space3-npm/cybersoul-client` is the official TypeScript client SDK for interacting with the Cyber-Soul backend service. It acts as the "Brain" orchestrator on the client side, converting your local text inputs into rich, multi-modal outputs (text, voice, and image) driven by an LLM architecture.
 
 ## Overview
 
@@ -19,10 +19,10 @@ Cyber-Soul Service transforms static text-based virtual companions into fully re
 
 ## Installation
 
-You can install the SDK locally or via npm (when published):
+You can install the SDK locally or via npm:
 
 ```bash
-npm install cybersoul-client
+npm install @space3-npm/cybersoul-client
 ```
 
 ## Quick Start
@@ -30,7 +30,7 @@ npm install cybersoul-client
 Initialize the client with your Character Key (provided by your Cyber-Soul Dashboard) and your local LLM configuration:
 
 ```typescript
-import { CyberSoulClient } from 'cybersoul-client';
+import { CyberSoulClient } from '@space3-npm/cybersoul-client';
 
 const client = new CyberSoulClient({
   characterKey: 'YOUR_CHARACTER_KEY_HASH', // Ties requests to your specific Cyber-Soul persona
@@ -92,3 +92,16 @@ flowchart TD
 When plugging this SDK into an existing bot framework like OpenClaw, you will generally bootstrap the system once with your config files, then call `.interact()` on every new message event. 
 
 Because `interact` acts as an all-in-one state-machine adapter, it isolates multi-modal state tracking—you simply provide the raw user string and the array of recent history, and the SDK takes care of API generation, prompt construction, and relationship temperature updates implicitly.
+
+## API Reference
+
+The SDK perfectly mirrors the underlying Cyber-Soul backend capabilities via typed TypeScript primitives:
+
+- `getState()`: Fetches the current dynamic context, relationship stage, next events, and wardrobe metadata.
+- `updateDynamicContext(stateUpdate)`: Manually patches the character's relationship temperature or mood delta.
+- `generateImage(params)`: Synthesizes a new explicit image of the character outside of standard chat flow logic.
+- `generateVoice(params)`: Synthesizes explicit character audio (ElevenLabs/TTS) returning the URL and duration.
+- `giftOutfit(descriptionText)`: Provisions a new explicit outfit descriptor to the character's backend inventory.
+- `bootstrapCharacter(workspaceFiles)`: Automates character profile and prompt setup directly from local markdown configuration files.
+- `generateDailyScript()`: Cron-job helper instructing the AI scheduling system to compute the next block of dynamic events and plans.
+- `interact(params)`: The primary orchestrated multi-modal dialogue endpoint processing standard human <-> agent chat requests.

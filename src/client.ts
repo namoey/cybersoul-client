@@ -7,7 +7,8 @@ import {
   BaseLLMProvider,
   CharacterState,
   ImageGenerationParams,
-  VoiceGenerationParams
+  VoiceGenerationParams,
+  CoreMemory,
 } from "./types.js";
 import { robustJsonParse } from "./utils/json.utils.js";
 import { MinimaxProvider } from "./providers/minimax.provider.js";
@@ -30,7 +31,10 @@ export class CyberSoulClient {
   /**
    * Internal wrapper for fetch that automatically injects the backend URL and Character Auth token.
    */
-  private async apiFetch(endpoint: string, options: RequestInit = {}): Promise<Response> {
+  private async apiFetch(
+    endpoint: string,
+    options: RequestInit = {},
+  ): Promise<Response> {
     const url = `${this.config.backendUrl}${endpoint}`;
     const headers = {
       Authorization: `Bearer ${this.config.characterKey}`,
@@ -54,7 +58,7 @@ export class CyberSoulClient {
     stateUpdate: DispatcherIntent["stateUpdate"],
   ): Promise<void> {
     if (!stateUpdate) return;
-    
+
     // Map TS schema intent (temperatureDelta) to match Backend payload schema (temperature)
     const payload: any = { ...stateUpdate };
     if (payload.temperatureDelta !== undefined) {
@@ -71,14 +75,18 @@ export class CyberSoulClient {
   /**
    * Manually generate an image of the character outside of chat flow.
    */
-  public async generateImage(params: ImageGenerationParams): Promise<{ imageUrl: string }> {
+  public async generateImage(
+    params: ImageGenerationParams,
+  ): Promise<{ imageUrl: string }> {
     return this.generatePrimitive("image", params);
   }
 
   /**
    * Manually synthesize voice audio outside of chat flow.
    */
-  public async generateVoice(params: VoiceGenerationParams): Promise<{ audioUrl: string, durationSec?: number }> {
+  public async generateVoice(
+    params: VoiceGenerationParams,
+  ): Promise<{ audioUrl: string; durationSec?: number }> {
     return this.generatePrimitive("voice", params);
   }
 
@@ -86,17 +94,22 @@ export class CyberSoulClient {
    * Gift a new outfit to the character's wardrobe inventory.
    */
   public async giftOutfit(descriptionText: string): Promise<void> {
-    const res = await this.apiFetch("/api/v1/cyber-soul/characters/gift-outfit", {
-      method: "POST",
-      body: JSON.stringify({ text: descriptionText }),
-    });
+    const res = await this.apiFetch(
+      "/api/v1/cyber-soul/characters/gift-outfit",
+      {
+        method: "POST",
+        body: JSON.stringify({ text: descriptionText }),
+      },
+    );
     if (!res.ok) throw new Error("Failed to gift outfit");
   }
 
   /**
    * Bootstrap character profile from OpenClaw workspace files.
    */
-  public async bootstrapCharacter(workspaceFiles: Record<string, string>): Promise<void> {
+  public async bootstrapCharacter(
+    workspaceFiles: Record<string, string>,
+  ): Promise<void> {
     const res = await this.apiFetch("/api/v1/cyber-soul/characters/bootstrap", {
       method: "POST",
       body: JSON.stringify({ workspace_files: workspaceFiles }),
@@ -109,9 +122,12 @@ export class CyberSoulClient {
    * Can be triggered by local Cron systems like OpenClaw.
    */
   public async generateDailyScript(): Promise<void> {
-    const res = await this.apiFetch("/api/v1/cyber-soul/daily-script/generate", {
-      method: "POST",
-    });
+    const res = await this.apiFetch(
+      "/api/v1/cyber-soul/daily-script/generate",
+      {
+        method: "POST",
+      },
+    );
     if (!res.ok) throw new Error("Failed to generate daily script");
   }
 
@@ -126,7 +142,7 @@ export class CyberSoulClient {
     stateUpdate: DispatcherIntent["stateUpdate"],
   ): Promise<void> {
     if (!stateUpdate) return;
-    
+
     // Map TS schema intent (temperatureDelta) to match Backend payload schema (temperature)
     const payload: any = { ...stateUpdate };
     if (payload.temperatureDelta !== undefined) {
@@ -149,13 +165,19 @@ export class CyberSoulClient {
     return res.json();
   }
 
-  private normalizeRequestTypes(requestTypes?: InteractRequestType[]): InteractRequestType[] {
+  private normalizeRequestTypes(
+    requestTypes?: InteractRequestType[],
+  ): InteractRequestType[] {
     if (!requestTypes || requestTypes.length === 0) {
       return [InteractRequestType.AUTO];
     }
 
-    const validRequestTypes = new Set<string>(Object.values(InteractRequestType));
-    const invalidRequestTypes = requestTypes.filter((type) => !validRequestTypes.has(type));
+    const validRequestTypes = new Set<string>(
+      Object.values(InteractRequestType),
+    );
+    const invalidRequestTypes = requestTypes.filter(
+      (type) => !validRequestTypes.has(type),
+    );
 
     if (invalidRequestTypes.length > 0) {
       throw new Error(
@@ -178,35 +200,43 @@ export class CyberSoulClient {
       // Combine state info into a clean descriptive context
       const contextParts: string[] = [];
       if (state.active_event) {
-        contextParts.push(`- Active Event: ${state.active_event.title} (${state.active_event.narrative_context})`);
+        contextParts.push(
+          `- Active Event: ${state.active_event.title} (${state.active_event.narrative_context})`,
+        );
       }
       if (state.next_event) {
-        contextParts.push(`- Next Event: ${state.next_event.title} at ${state.next_event.start_time} (in ${state.next_event.time_until_mins} mins)`);
+        contextParts.push(
+          `- Next Event: ${state.next_event.title} at ${state.next_event.start_time} (in ${state.next_event.time_until_mins} mins)`,
+        );
       }
       if (state.active_wardrobe) {
-        contextParts.push(`- Wardrobe: ${state.active_wardrobe.name || state.active_wardrobe.id || "Current"}`);
+        contextParts.push(
+          `- Wardrobe: ${state.active_wardrobe.name || state.active_wardrobe.id || "Current"}`,
+        );
       }
 
       const dyn = state.dynamic_context || {};
       const stage = state.relationship_stage || "NEUTRAL";
-      contextParts.push(`- Relationship Info (Stage: ${stage}): You call the user '${dyn.userNickname || "User"}'. The user calls you '${dyn.agentNickname || "Agent"}'. Mood: ${dyn.talkingStyle || "Normal"}. Temp (0-100): ${dyn.temperature || 50}.`);
-      
+      contextParts.push(
+        `- Relationship Info (Stage: ${stage}): You call the user '${dyn.userNickname || "User"}'. The user calls you '${dyn.agentNickname || "Agent"}'. Mood: ${dyn.talkingStyle || "Normal"}. Temp (0-100): ${dyn.temperature || 50}.`,
+      );
+
       if (params.localContext) {
         contextParts.push(`- Additional Context: ${params.localContext}`);
       }
       const scenarioContext = contextParts.join("\n");
 
       const systemPrompt = `You are ${state.name}, acting as a virtual companion.
-  Demographics: Age ${state.age || 'unknown'}, Gender ${state.gender || 'unknown'}, Occupation ${state.occupation || 'unknown'}, Hobby ${state.hobby || 'unknown'}
+  Demographics: Age ${state.age || "unknown"}, Gender ${state.gender || "unknown"}, Occupation ${state.occupation || "unknown"}, Hobby ${state.hobby || "unknown"}
 Current time: ${new Date(state.current_time).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}
 Current context/schedule: ${scenarioContext}
 Relationship stage: ${state.relationship_stage}
-Personality Traits: ${state.personality_traits || 'None'}
-Interaction Boundaries: ${state.interaction_boundaries || 'None'}
-Communication Style: ${state.communication_style || 'None'}
+Personality Traits: ${state.personality_traits || "None"}
+Interaction Boundaries: ${state.interaction_boundaries || "None"}
+Communication Style: ${state.communication_style || "None"}
 
 EMOTIONAL INERTIA RULES:
-1. You must act strictly according to the current Relationship Stage (${state.relationship_stage || 'NEUTRAL'}).
+1. You must act strictly according to the current Relationship Stage (${state.relationship_stage || "NEUTRAL"}).
 2. If the user expresses sudden high affection (e.g. "I miss you") but your stage is COLD, you MUST react with skepticism, coldness, or appropriately distanced deflection. Do NOT instantly become warm.
 3. Emotional mood changes must be slow. The 'temperatureDelta' should rarely exceed +/- 5 points per turn.
 
@@ -293,7 +323,8 @@ Note: If "imageParams", "voiceArgs", or "stateUpdate" are not needed, set their 
       let finalDurationSec: number | undefined = undefined;
 
       const shouldGenerateImage =
-        types.includes(InteractRequestType.IMAGE) || (isAuto && !!parsedIntent.imageParams);
+        types.includes(InteractRequestType.IMAGE) ||
+        (isAuto && !!parsedIntent.imageParams);
       if (shouldGenerateImage) {
         mediaTasks.push(
           this.generatePrimitive("image", {
@@ -306,13 +337,14 @@ Note: If "imageParams", "voiceArgs", or "stateUpdate" are not needed, set their 
       }
 
       const shouldGenerateVoice =
-        types.includes(InteractRequestType.VOICE) || (isAuto && !!parsedIntent.voiceArgs);
+        types.includes(InteractRequestType.VOICE) ||
+        (isAuto && !!parsedIntent.voiceArgs);
       if (shouldGenerateVoice) {
-        const dynamicArgs = { 
+        const dynamicArgs = {
           ...(parsedIntent.voiceArgs || {}),
-          ...(params.voiceOverrides || {})
+          ...(params.voiceOverrides || {}),
         };
-        
+
         mediaTasks.push(
           this.generatePrimitive("voice", {
             text: parsedIntent.textResponse,
@@ -341,6 +373,103 @@ Note: If "imageParams", "voiceArgs", or "stateUpdate" are not needed, set their 
         textResponse: "System Error...",
         error: error.message,
       };
+    }
+  }
+
+  /**
+   * Consolidate Core Memory using edge LLM logic and sync to remote DB
+   */
+  async consolidateCoreMemory(input: {
+    events: string;
+  }): Promise<{ status: string; coreMemory?: CoreMemory; error?: string }> {
+    try {
+      const state = await this.getState();
+      const currentMemory = state.core_memory || {
+        relationshipStatus: "Starting out",
+        identityAnchors: [],
+        activeArcs: [],
+        keyEvents: [],
+        appointments: [],
+      };
+
+      const systemPrompt = `You are an AI Memory Consolidation Engine for a virtual companion.
+Your task is to merge the 'Current Core Memory' with 'New Daily Events & Information' and output an updated 'Core Memory' JSON object.
+
+**Rules:**
+1. **Condense:** Keep items brief. Remove resolving or expired story arcs.
+2. **Retain Value:** Never delete the absolute core identity or major relationship milestones.
+3. **Time-Aware:** Update or remove 'appointments' if the new events mention they occurred. If an event or appointment is time-specific, append the day/time to its description.
+4. **Limit:** Maximum 10 items per array.
+5. **Output Format**: MUST be valid JSON matching this schema:
+   {
+     "relationshipStatus": "string",
+     "identityAnchors": ["string"],
+     "activeArcs": ["string"],
+     "keyEvents": ["string"],
+     "appointments": ["string"]
+   }
+DO NOT RETURN ANY MARKDOWN WRAPPERS OR OTHER TEXT. ONLY RAW JSON.`;
+
+      const currentTime = state.current_time
+        ? new Date(state.current_time).toLocaleString("zh-CN", {
+            timeZone: "Asia/Shanghai",
+          })
+        : new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" });
+
+      const prompt = `**Current Time:** ${currentTime}
+
+**Current Core Memory:**
+${JSON.stringify(currentMemory, null, 2)}
+
+**New Events & Information:**
+${input.events}`;
+
+      const responseText = await this.llm.generate(
+        [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: prompt },
+        ],
+        1500,
+        0.4,
+      );
+
+      let newMemory;
+      try {
+        newMemory = robustJsonParse<CoreMemory>(
+          responseText,
+          "parsing core memory",
+        );
+      } catch (e) {
+        throw new Error("LLM failed to return valid JSON payload");
+      }
+
+      if (
+        !newMemory ||
+        !newMemory.relationshipStatus ||
+        !newMemory.activeArcs
+      ) {
+        throw new Error(
+          "LLM returned incomplete structured core memory payload",
+        );
+      }
+
+      const response = await this.apiFetch(
+        "/api/v1/cyber-soul/characters/core-memory",
+        {
+          method: "PATCH",
+          body: JSON.stringify({ coreMemory: newMemory }),
+        },
+      );
+      if (!response.ok) {
+        throw new Error(
+          `Failed to update core memory. Status: ${response.status}`,
+        );
+      }
+
+      return { status: "success", coreMemory: newMemory as CoreMemory };
+    } catch (error: any) {
+      console.error("[CyberSoulClient] consolidateCoreMemory Error:", error);
+      return { status: "error", error: error.message };
     }
   }
 }

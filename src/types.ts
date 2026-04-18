@@ -48,12 +48,20 @@ export interface DispatcherIntent {
   };
 }
 
+export interface CoreMemory {
+  relationshipStatus: string;
+  identityAnchors: string[];
+  activeArcs: string[];
+  keyEvents: string[];
+  appointments: string[];
+}
+
 export interface CharacterState {
   current_time: string;
   active_event?: any;
   next_event?: any;
   active_wardrobe?: any;
-  active_story_arcs?: string[];
+  core_memory?: CoreMemory;
   dynamic_context?: any;
   relationship_stage?: string;
   name?: string;

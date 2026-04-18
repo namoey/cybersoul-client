@@ -10,13 +10,20 @@ export interface CyberSoulClientConfig {
   llmConfig: LLMConfig;
 }
 
+export enum InteractRequestType {
+  AUTO = 'auto',
+  TEXT = 'text',
+  IMAGE = 'image',
+  VOICE = 'voice',
+}
+
 export interface InteractParams {
   userMessage: string;
   localContext?: string;
-  requestTypes?: string[];
+  requestTypes?: InteractRequestType[];
   history?: { role: string; content: string }[];
-  imageOverrides?: any;
-  voiceStyleOverride?: string;
+  imageOverrides?: Partial<ImageGenerationParams>;
+  voiceOverrides?: Partial<VoiceGenerationParams['dynamicArgs']>;
   onTextReady?: (textResponse: string) => void;
 }
 

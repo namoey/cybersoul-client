@@ -1,6 +1,7 @@
 import {
   CyberSoulClientConfig,
   InteractParams,
+  InteractRequestType,
   DispatcherIntent,
   InteractResponse,
   BaseLLMProvider,
@@ -148,14 +149,31 @@ export class CyberSoulClient {
     return res.json();
   }
 
+  private normalizeRequestTypes(requestTypes?: InteractRequestType[]): InteractRequestType[] {
+    if (!requestTypes || requestTypes.length === 0) {
+      return [InteractRequestType.AUTO];
+    }
+
+    const validRequestTypes = new Set<string>(Object.values(InteractRequestType));
+    const invalidRequestTypes = requestTypes.filter((type) => !validRequestTypes.has(type));
+
+    if (invalidRequestTypes.length > 0) {
+      throw new Error(
+        `Invalid requestTypes: ${invalidRequestTypes.join(", ")}. Allowed values: ${Object.values(InteractRequestType).join(", ")}`,
+      );
+    }
+
+    return requestTypes;
+  }
+
   public async interact(params: InteractParams): Promise<InteractResponse> {
     try {
       // 1. Sync remote context
       const state = await this.fetchRemoteState();
 
       // 2. Build local Prompt
-      const types = params.requestTypes && params.requestTypes.length > 0 ? params.requestTypes : ["auto"];
-      const isAuto = types.includes("auto");
+      const types = this.normalizeRequestTypes(params.requestTypes);
+      const isAuto = types.includes(InteractRequestType.AUTO);
 
       // Combine state info into a clean descriptive context
       const contextParts: string[] = [];
@@ -200,7 +218,7 @@ ${
   - Always include 'textResponse'.
   - If the user explicitly asks to see a photo, look at you, or describing an action that warrants a photo, include 'imageParams'.
   - If the user wants to hear you, or if appropriate for a voice message, include 'voiceArgs'.`
-    : `Requested types to fulfill: ${(params.requestTypes ?? []).join(", ")}`
+    : `Requested types to fulfill: ${types.join(", ")}`
 }
 If the user's message shifts the emotional mood, establishes new nicknames, or warrants a relationship temperature change, you MUST include a 'stateUpdate' block. Temperature goes from 0 (cold/angry) to 100 (obsessively in love).
 
@@ -274,7 +292,8 @@ Note: If "imageParams", "voiceArgs", or "stateUpdate" are not needed, set their 
       let finalAudioUrl: string | undefined = undefined;
       let finalDurationSec: number | undefined = undefined;
 
-      const shouldGenerateImage = types.includes("image") || (isAuto && !!parsedIntent.imageParams);
+      const shouldGenerateImage =
+        types.includes(InteractRequestType.IMAGE) || (isAuto && !!parsedIntent.imageParams);
       if (shouldGenerateImage) {
         mediaTasks.push(
           this.generatePrimitive("image", {
@@ -286,12 +305,13 @@ Note: If "imageParams", "voiceArgs", or "stateUpdate" are not needed, set their 
         );
       }
 
-      const shouldGenerateVoice = types.includes("voice") || (isAuto && !!parsedIntent.voiceArgs);
+      const shouldGenerateVoice =
+        types.includes(InteractRequestType.VOICE) || (isAuto && !!parsedIntent.voiceArgs);
       if (shouldGenerateVoice) {
-        const dynamicArgs = { ...(parsedIntent.voiceArgs || {}) };
-        if (params.voiceStyleOverride) {
-          dynamicArgs.style_instruction = params.voiceStyleOverride;
-        }
+        const dynamicArgs = { 
+          ...(parsedIntent.voiceArgs || {}),
+          ...(params.voiceOverrides || {})
+        };
         
         mediaTasks.push(
           this.generatePrimitive("voice", {

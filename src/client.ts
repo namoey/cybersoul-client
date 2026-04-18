@@ -149,7 +149,7 @@ EMOTIONAL INERTIA RULES:
     const prompt = `${this.buildStateContextPrompt(state, params.interactParams?.localContext)}
 
 You are an AI image prompt director. Analyze the scene description according to the character's relationship stage and emotional inertia to determine the best image generation parameters.
-Output strictly valid JSON exactly matching this schema:
+Output strictly valid JSON ONLY. No markdown, no conversational filler. Return exactly matching this schema:
 {
   ${this.getImageSchemaParams()}
 }`;
@@ -159,11 +159,13 @@ Output strictly valid JSON exactly matching this schema:
       ...(params.interactParams?.history || []),
       {
         role: "user",
-        content: `Scene Description: "${params.sceneDescription}"`,
+        content: `Scene Description: "${params.sceneDescription}"\n\n**CRITICAL REMINDER**: You MUST output your final response exactly in the JSON format specified in the system prompt. DO NOT output plain text dialogue directly. For 'imageParams', ALL values MUST be in ENGLISH ONLY without exception, and you MUST use the exact English enum strings provided.`,
       },
     ];
 
     const llmRes = await this.llm.generate(promptMessages, 500, 0.4);
+    console.log("[CyberSoulClient ImageGen] Raw LLM Response:", llmRes);
+
     try {
       const parsedImageArgs = robustJsonParse<any>(llmRes, "generateImage args fallback");
       imageParams = parsedImageArgs.imageParams || parsedImageArgs;
@@ -171,7 +173,11 @@ Output strictly valid JSON exactly matching this schema:
       imageParams = { mode: "full-prompt", full_prompt: params.sceneDescription }; // fallback to basic prompt
     }
     
-    return this.generatePrimitive("image", imageParams);
+    const res = await this.generatePrimitive("image", imageParams);
+
+    return {
+      imageUrl: res.image_url,
+    };
   }
 
   /**
@@ -187,28 +193,35 @@ Output strictly valid JSON exactly matching this schema:
 
 You are a voice acting director. Analyze the text according to the character's relationship stage and emotional inertia to determine the single best emotion and a style instruction for TTS.
 Allowed emotions: "happy", "sad", "angry", "fearful", "disgusted", "surprised", "calm", "fluent", "whisper".
-Output strictly valid JSON in exactly this format: {"emotion": "chosen_emotion", "style_instruction": "How the line should be spoken"}`;
+Output strictly valid JSON ONLY. No markdown, no conversational filler. Return exactly this format: {"emotion": "chosen_emotion", "style_instruction": "How the line should be spoken"}`;
     
     const promptMessages = [
       { role: "system", content: prompt },
       ...(params.interactParams?.history || []),
       {
         role: "user",
-        content: `Text: "${params.text}"`,
+        content: `Text: "${params.text}"\n\n**CRITICAL REMINDER**: You MUST output your final response exactly in the JSON format specified in the system prompt. DO NOT output plain text dialogue directly.`,
       },
     ];
 
     const llmRes = await this.llm.generate(promptMessages, 300, 0.3);
+    console.log("[CyberSoulClient VoiceGen] Raw LLM Response:", llmRes);
+
     try {
       dynamicArgs = robustJsonParse(llmRes, "generateVoice args fallback");
     } catch (e) {
       dynamicArgs = {}; // fallback to empty
     }
     
-    return this.generatePrimitive("voice", {
+    const res = await this.generatePrimitive("voice", {
       text: params.text,
       dynamicArgs,
     });
+
+    return {
+      audioUrl: res.audio_url,
+      durationSec: res.duration_sec,
+    };
   }
 
   /**

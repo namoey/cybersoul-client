@@ -6,8 +6,6 @@ import {
   InteractResponse,
   BaseLLMProvider,
   CharacterState,
-  ImageGenerationParams,
-  VoiceGenerationParams,
   CoreMemory,
 } from "./types.js";
 import { robustJsonParse } from "./utils/json.utils.js";
@@ -44,6 +42,73 @@ export class CyberSoulClient {
     return fetch(url, { ...options, headers });
   }
 
+  private buildStateContextPrompt(
+    state: CharacterState,
+    localContext?: string,
+  ): string {
+    const contextParts: string[] = [];
+    if (state.active_event) {
+      contextParts.push(
+        `- Active Event: ${state.active_event.title} (${state.active_event.narrative_context})`,
+      );
+    }
+    if (state.next_event) {
+      contextParts.push(
+        `- Next Event: ${state.next_event.title} at ${state.next_event.start_time} (in ${state.next_event.time_until_mins} mins)`,
+      );
+    }
+    if (state.active_wardrobe) {
+      contextParts.push(
+        `- Wardrobe: ${state.active_wardrobe.name || state.active_wardrobe.id || "Current"}`,
+      );
+    }
+
+    const dyn = state.dynamic_context || {};
+    const stage = state.relationship_stage || "NEUTRAL";
+    contextParts.push(
+      `- Relationship Info (Stage: ${stage}): You call the user '${dyn.userNickname || "User"}'. The user calls you '${dyn.agentNickname || "Agent"}'. Mood: ${dyn.talkingStyle || "Normal"}. Temp (0-100): ${dyn.temperature || 50}.`,
+    );
+
+    if (localContext) {
+      contextParts.push(`- Additional Context: ${localContext}`);
+    }
+    const scenarioContext = contextParts.join("\n");
+
+    return `You are ${state.name}, acting as a virtual companion.
+  Demographics: Age ${state.age || "unknown"}, Gender ${state.gender || "unknown"}, Occupation ${state.occupation || "unknown"}, Hobby ${state.hobby || "unknown"}
+Current time: ${new Date(state.current_time || Date.now()).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}
+Current context/schedule: ${scenarioContext}
+Relationship stage: ${state.relationship_stage}
+Personality Traits: ${state.personality_traits || "None"}
+Interaction Boundaries: ${state.interaction_boundaries || "None"}
+Communication Style: ${state.communication_style || "None"}
+
+EMOTIONAL INERTIA RULES:
+1. You must act strictly according to the current Relationship Stage (${state.relationship_stage || "NEUTRAL"}).
+2. If the user expresses sudden high affection (e.g. "I miss you") but your stage is COLD, you MUST react with skepticism, coldness, or appropriately distanced deflection. Do NOT instantly become warm.
+3. Emotional mood changes must be slow. The 'temperatureDelta' should rarely exceed +/- 5 points per turn.`;
+  }
+
+  private getImageSchemaParams(): string {
+    return `"imageParams": {
+    "mode": "structured | full-prompt (use 'full-prompt' for highly dynamic actions)",
+    "full_prompt": "Use only if mode is full-prompt. Highly detailed visual description in ENGLISH.",
+    "expression": "seductive | cute | happy | sleepy | dazed | pleased | default (Strictly choose ONE from this exact list. DO NOT invent new words like 'shy'.)",
+    "condition": "normal | sweaty | wet | messy | oily (Strictly choose ONE from this exact list.)",
+    "view_angle": "front | side | high_angle | from_below | boyfriend_view | selfie | mirror (Strictly choose ONE from this exact list.)",
+    "exposure": "normal | cleavage | see_through | half_naked | naked | intimate (Strictly choose ONE from this exact list.)",
+    "pose": "e.g., sitting on bed, leaning forward (ENGLISH ONLY)",
+    "scene": "e.g., cozy bedroom, morning light (ENGLISH ONLY)",
+    "outfit": "auto | ondemand",
+    "ondemandOutfit": "e.g., silk robe (ENGLISH ONLY)",
+    "style": "e.g., photorealistic (ENGLISH ONLY)"
+  }`;
+  }
+
+  private getVoiceSchemaParams(): string {
+    return `"voiceArgs": { "style_instruction": "How the line should be spoken (Qwen3 format)", "emotion": "happy | sad | angry | fearful | disgusted | surprised | calm | fluent | whisper (Strictly choose ONE from this exact list.)" }`;
+  }
+
   /**
    * Fetches the current dynamic context and daily state.
    */
@@ -76,18 +141,74 @@ export class CyberSoulClient {
    * Manually generate an image of the character outside of chat flow.
    */
   public async generateImage(
-    params: ImageGenerationParams,
+    params: { sceneDescription: string; interactParams?: InteractParams },
   ): Promise<{ imageUrl: string }> {
-    return this.generatePrimitive("image", params);
+    let imageParams: any = {};
+    
+    const state = await this.getState();
+    const prompt = `${this.buildStateContextPrompt(state, params.interactParams?.localContext)}
+
+You are an AI image prompt director. Analyze the scene description according to the character's relationship stage and emotional inertia to determine the best image generation parameters.
+Output strictly valid JSON exactly matching this schema:
+{
+  ${this.getImageSchemaParams()}
+}`;
+    
+    const promptMessages = [
+      { role: "system", content: prompt },
+      ...(params.interactParams?.history || []),
+      {
+        role: "user",
+        content: `Scene Description: "${params.sceneDescription}"`,
+      },
+    ];
+
+    const llmRes = await this.llm.generate(promptMessages, 500, 0.4);
+    try {
+      const parsedImageArgs = robustJsonParse<any>(llmRes, "generateImage args fallback");
+      imageParams = parsedImageArgs.imageParams || parsedImageArgs;
+    } catch (e) {
+      imageParams = { mode: "full-prompt", full_prompt: params.sceneDescription }; // fallback to basic prompt
+    }
+    
+    return this.generatePrimitive("image", imageParams);
   }
 
   /**
    * Manually synthesize voice audio outside of chat flow.
    */
   public async generateVoice(
-    params: VoiceGenerationParams,
+    params: { text: string; interactParams?: InteractParams },
   ): Promise<{ audioUrl: string; durationSec?: number }> {
-    return this.generatePrimitive("voice", params);
+    let dynamicArgs: any = {};
+    
+    const state = await this.getState();
+    const prompt = `${this.buildStateContextPrompt(state, params.interactParams?.localContext)}
+
+You are a voice acting director. Analyze the text according to the character's relationship stage and emotional inertia to determine the single best emotion and a style instruction for TTS.
+Allowed emotions: "happy", "sad", "angry", "fearful", "disgusted", "surprised", "calm", "fluent", "whisper".
+Output strictly valid JSON in exactly this format: {"emotion": "chosen_emotion", "style_instruction": "How the line should be spoken"}`;
+    
+    const promptMessages = [
+      { role: "system", content: prompt },
+      ...(params.interactParams?.history || []),
+      {
+        role: "user",
+        content: `Text: "${params.text}"`,
+      },
+    ];
+
+    const llmRes = await this.llm.generate(promptMessages, 300, 0.3);
+    try {
+      dynamicArgs = robustJsonParse(llmRes, "generateVoice args fallback");
+    } catch (e) {
+      dynamicArgs = {}; // fallback to empty
+    }
+    
+    return this.generatePrimitive("voice", {
+      text: params.text,
+      dynamicArgs,
+    });
   }
 
   /**
@@ -198,47 +319,7 @@ export class CyberSoulClient {
       const isAuto = types.includes(InteractRequestType.AUTO);
 
       // Combine state info into a clean descriptive context
-      const contextParts: string[] = [];
-      if (state.active_event) {
-        contextParts.push(
-          `- Active Event: ${state.active_event.title} (${state.active_event.narrative_context})`,
-        );
-      }
-      if (state.next_event) {
-        contextParts.push(
-          `- Next Event: ${state.next_event.title} at ${state.next_event.start_time} (in ${state.next_event.time_until_mins} mins)`,
-        );
-      }
-      if (state.active_wardrobe) {
-        contextParts.push(
-          `- Wardrobe: ${state.active_wardrobe.name || state.active_wardrobe.id || "Current"}`,
-        );
-      }
-
-      const dyn = state.dynamic_context || {};
-      const stage = state.relationship_stage || "NEUTRAL";
-      contextParts.push(
-        `- Relationship Info (Stage: ${stage}): You call the user '${dyn.userNickname || "User"}'. The user calls you '${dyn.agentNickname || "Agent"}'. Mood: ${dyn.talkingStyle || "Normal"}. Temp (0-100): ${dyn.temperature || 50}.`,
-      );
-
-      if (params.localContext) {
-        contextParts.push(`- Additional Context: ${params.localContext}`);
-      }
-      const scenarioContext = contextParts.join("\n");
-
-      const systemPrompt = `You are ${state.name}, acting as a virtual companion.
-  Demographics: Age ${state.age || "unknown"}, Gender ${state.gender || "unknown"}, Occupation ${state.occupation || "unknown"}, Hobby ${state.hobby || "unknown"}
-Current time: ${new Date(state.current_time).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}
-Current context/schedule: ${scenarioContext}
-Relationship stage: ${state.relationship_stage}
-Personality Traits: ${state.personality_traits || "None"}
-Interaction Boundaries: ${state.interaction_boundaries || "None"}
-Communication Style: ${state.communication_style || "None"}
-
-EMOTIONAL INERTIA RULES:
-1. You must act strictly according to the current Relationship Stage (${state.relationship_stage || "NEUTRAL"}).
-2. If the user expresses sudden high affection (e.g. "I miss you") but your stage is COLD, you MUST react with skepticism, coldness, or appropriately distanced deflection. Do NOT instantly become warm.
-3. Emotional mood changes must be slow. The 'temperatureDelta' should rarely exceed +/- 5 points per turn.
+      const systemPrompt = `${this.buildStateContextPrompt(state, params.localContext)}
 
 The user has sent a message. You must evaluate the context and the user's message, and return a JSON object (no markdown formatting) that dictates the character's multi-modal response.
 
@@ -256,20 +337,8 @@ Output JSON Schema:
 {
   "textResponse": "The direct spoken dialogue in Chinese",
   "stateUpdate": { "temperatureDelta": "+1 to -1", "userNickname": "What you now call the user", "agentNickname": "What the user calls you", "talkingStyle": "Current mood/style of talking" },
-  "imageParams": {
-    "mode": "structured | full-prompt (use 'full-prompt' for highly dynamic actions)",
-    "full_prompt": "Use only if mode is full-prompt. Highly detailed visual description in ENGLISH.",
-    "expression": "seductive | cute | happy | sleepy | dazed | pleased | default (Strictly choose ONE from this exact list. DO NOT invent new words like 'shy'.)",
-    "condition": "normal | sweaty | wet | messy | oily (Strictly choose ONE from this exact list.)",
-    "view_angle": "front | side | high_angle | from_below | boyfriend_view | selfie | mirror (Strictly choose ONE from this exact list.)",
-    "exposure": "normal | cleavage | see_through | half_naked | naked | intimate (Strictly choose ONE from this exact list.)",
-    "pose": "e.g., sitting on bed, leaning forward (ENGLISH ONLY)",
-    "scene": "e.g., cozy bedroom, morning light (ENGLISH ONLY)",
-    "outfit": "auto | ondemand",
-    "ondemandOutfit": "e.g., silk robe (ENGLISH ONLY)",
-    "style": "e.g., photorealistic (ENGLISH ONLY)"
-  },
-  "voiceArgs": { "style_instruction": "How the line should be spoken (Qwen3 format)", "emotion": "e.g., happy (MiniMax format, MUST BE ENGLISH, no Chinese)" }
+  ${this.getImageSchemaParams()},
+  ${this.getVoiceSchemaParams()}
 }
 Note: If "imageParams", "voiceArgs", or "stateUpdate" are not needed, set their values to null instead of omitting the keys completely (e.g., "imageParams": null). Output MUST be ONLY valid JSON with no markdown block wrappers. CRITICAL: Ensure your JSON has exactly one root object \`{\` and ends with exactly one \`}\` without any trailing garbage or extra brackets.`;
 
@@ -327,10 +396,7 @@ Note: If "imageParams", "voiceArgs", or "stateUpdate" are not needed, set their 
         (isAuto && !!parsedIntent.imageParams);
       if (shouldGenerateImage) {
         mediaTasks.push(
-          this.generatePrimitive("image", {
-            ...parsedIntent.imageParams,
-            ...(params.imageOverrides || {}),
-          }).then((res: any) => {
+          this.generatePrimitive("image", parsedIntent.imageParams).then((res: any) => {
             finalImageUrl = res.image_url;
           }),
         );
@@ -340,15 +406,10 @@ Note: If "imageParams", "voiceArgs", or "stateUpdate" are not needed, set their 
         types.includes(InteractRequestType.VOICE) ||
         (isAuto && !!parsedIntent.voiceArgs);
       if (shouldGenerateVoice) {
-        const dynamicArgs = {
-          ...(parsedIntent.voiceArgs || {}),
-          ...(params.voiceOverrides || {}),
-        };
-
         mediaTasks.push(
           this.generatePrimitive("voice", {
             text: parsedIntent.textResponse,
-            dynamicArgs,
+            dynamicArgs: parsedIntent.voiceArgs || {},
           }).then((res: any) => {
             finalAudioUrl = res.audio_url;
             finalDurationSec = res.duration_sec;

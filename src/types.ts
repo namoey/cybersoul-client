@@ -22,8 +22,6 @@ export interface InteractParams {
   localContext?: string;
   requestTypes?: InteractRequestType[];
   history?: { role: string; content: string }[];
-  imageOverrides?: Partial<ImageGenerationParams>;
-  voiceOverrides?: Partial<VoiceGenerationParams['dynamicArgs']>;
   onTextReady?: (textResponse: string) => void;
 }
 
@@ -76,29 +74,4 @@ export interface CharacterState {
 
 export interface BaseLLMProvider {
   generate(messages: { role: string; content: string }[], maxTokens?: number, temperature?: number): Promise<string>;
-}
-
-export interface ImageGenerationParams {
-  mode: 'structured' | 'full-prompt';
-  full_prompt?: string;
-  expression?: string;
-  condition?: string;
-  pose?: string;
-  view_angle?: string;
-  exposure?: string;
-  outfit?: string;
-  scene?: string;
-  ondemandOutfit?: string;
-  style?: string;
-  triggerWord?: string;
-  appearanceBody?: string;
-  appearanceFace?: string;
-}
-
-export interface VoiceGenerationParams {
-  text: string;
-  dynamicArgs: {
-    style_instruction?: string;
-    emotion?: string;
-  };
 }

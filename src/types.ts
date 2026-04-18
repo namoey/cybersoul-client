@@ -60,6 +60,7 @@ export interface CharacterState {
   age?: number;
   gender?: string;
   occupation?: string;
+  hobby?: string;
   personality_traits?: string;
   interaction_boundaries?: string;
   communication_style?: string;

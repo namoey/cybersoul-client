@@ -197,7 +197,7 @@ export class CyberSoulClient {
       const scenarioContext = contextParts.join("\n");
 
       const systemPrompt = `You are ${state.name}, acting as a virtual companion.
-  Demographics: Age ${state.age || 'unknown'}, Gender ${state.gender || 'unknown'}, Occupation ${state.occupation || 'unknown'}
+  Demographics: Age ${state.age || 'unknown'}, Gender ${state.gender || 'unknown'}, Occupation ${state.occupation || 'unknown'}, Hobby ${state.hobby || 'unknown'}
 Current time: ${new Date(state.current_time).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}
 Current context/schedule: ${scenarioContext}
 Relationship stage: ${state.relationship_stage}

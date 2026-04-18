@@ -163,7 +163,7 @@ Output strictly valid JSON ONLY. No markdown, no conversational filler. Return e
       },
     ];
 
-    const llmRes = await this.llm.generate(promptMessages, 500, 0.4);
+    const llmRes = await this.llm.generate(promptMessages, 800, 0.4);
     console.log("[CyberSoulClient ImageGen] Raw LLM Response:", llmRes);
 
     try {
@@ -204,7 +204,7 @@ Output strictly valid JSON ONLY. No markdown, no conversational filler. Return e
       },
     ];
 
-    const llmRes = await this.llm.generate(promptMessages, 300, 0.3);
+    const llmRes = await this.llm.generate(promptMessages, 800, 0.3);
     console.log("[CyberSoulClient VoiceGen] Raw LLM Response:", llmRes);
 
     try {

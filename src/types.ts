@@ -37,7 +37,7 @@ export interface InteractResponse {
 export interface DispatcherIntent {
   textResponse?: string;
   imageParams?: any;
-  voiceArgs?: any;
+  voiceArgs?: VoiceArgs | null;
   stateUpdate?: {
     temperatureDelta?: string | number;
     userNickname?: string;
@@ -54,6 +54,37 @@ export interface CoreMemory {
   appointments: string[];
 }
 
+/**
+ * Generic dynamic voice args returned by the LLM and forwarded to backend TTS.
+ *
+ * - T lets callers/project code narrow this to model-specific fields when needed.
+ * - Defaults to fully dynamic key/value pairs for provider-agnostic SDK behavior.
+ */
+export type VoiceArgs<
+  T extends Record<string, unknown> = Record<string, unknown>,
+> = T;
+
+/**
+ * Optional compatibility shape for currently common fields.
+ * Not used as the SDK contract to avoid coupling to specific providers.
+ */
+export interface CommonVoiceArgs {
+  style_instruction?: string;
+  emotion?: string;
+}
+
+export interface VoiceModelState {
+  tts_provider?: string;
+  dynamic_param_prompt_template?: string;
+  dynamic_params?: Array<{
+    name: string;
+    description: string;
+    type: string;
+    required: boolean;
+    default?: unknown;
+  }>;
+}
+
 export interface CharacterState {
   current_time: string;
   active_event?: any;
@@ -61,6 +92,7 @@ export interface CharacterState {
   active_wardrobe?: any;
   core_memory?: CoreMemory;
   dynamic_context?: any;
+  voice_model?: VoiceModelState | null;
   relationship_stage?: string;
   name?: string;
   age?: number;

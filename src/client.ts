@@ -7,6 +7,8 @@ import {
   BaseLLMProvider,
   CharacterState,
   CoreMemory,
+  VoiceArgs,
+  VoiceModelState,
 } from "./types.js";
 import { robustJsonParse } from "./utils/json.utils.js";
 import { MinimaxProvider } from "./providers/minimax.provider.js";
@@ -106,7 +108,59 @@ EMOTIONAL INERTIA RULES:
   }
 
   private getVoiceSchemaParams(): string {
-    return `"voiceArgs": { "style_instruction": "How the line should be spoken (Qwen3 format)", "emotion": "happy | sad | angry | fearful | disgusted | surprised | calm | fluent | whisper (Strictly choose ONE from this exact list.)" }`;
+    // Only reached when no dynamic_params are configured on the voice model.
+    // Configure dynamic_params in DB to match the TTS provider; this fallback is provider-agnostic.
+    console.warn("[CyberSoulClient] voice_model.dynamic_params not configured — using generic fallback schema. Configure dynamic_params in DB for provider-specific behaviour.");
+    return `"voiceArgs": { "style_instruction": "How the line should be spoken (required)" }`;
+  }
+
+  private buildVoiceSchemaFromDynamicParams(
+    dynamicParams: NonNullable<VoiceModelState["dynamic_params"]>,
+  ): string {
+    const fields = dynamicParams
+      .map((p) => {
+        const hint = p.required ? `${p.description} (required)` : `${p.description} (optional)`;
+        return `"${p.name}": "${hint}"`;
+      })
+      .join(", ");
+    return `"voiceArgs": { ${fields} }`;
+  }
+
+  /**
+   * Returns the JSON schema snippet for voiceArgs to embed in the LLM output schema.
+   * Built from dynamic_params when available, otherwise falls back to static defaults.
+   */
+  private getVoiceSchemaFromState(state: CharacterState): string {
+    const dynamicParams = state.voice_model?.dynamic_params;
+    if (dynamicParams && dynamicParams.length > 0) {
+      return this.buildVoiceSchemaFromDynamicParams(dynamicParams);
+    }
+    return this.getVoiceSchemaParams();
+  }
+
+  /**
+   * Returns the natural-language director instruction for generating voiceArgs.
+   * Uses dynamic_param_prompt_template from the voice model when configured.
+   */
+  private getVoiceDirectorInstruction(state: CharacterState): string {
+    const template = state.voice_model?.dynamic_param_prompt_template?.trim();
+    if (template) {
+      return template;
+    }
+    return "Analyze the text according to the character's relationship stage and emotional inertia to determine the best dynamic voice parameters for TTS.";
+  }
+
+  /**
+   * Extracts and types voiceArgs from a raw standalone LLM response.
+   * The voice-only prompt wraps the result as { voiceArgs: { ... } } — unwraps the inner object.
+   * If the payload is already the inner args object (no voiceArgs wrapper), uses it as-is.
+   */
+  private extractVoiceArgsFromLlmResponse(payload: Record<string, unknown>): VoiceArgs {
+    const inner = payload.voiceArgs;
+    if (inner && typeof inner === "object" && !Array.isArray(inner)) {
+      return inner as VoiceArgs;
+    }
+    return payload as VoiceArgs;
   }
 
   /**
@@ -122,19 +176,7 @@ EMOTIONAL INERTIA RULES:
   public async updateDynamicContext(
     stateUpdate: DispatcherIntent["stateUpdate"],
   ): Promise<void> {
-    if (!stateUpdate) return;
-
-    // Map TS schema intent (temperatureDelta) to match Backend payload schema (temperature)
-    const payload: any = { ...stateUpdate };
-    if (payload.temperatureDelta !== undefined) {
-      payload.temperature = payload.temperatureDelta;
-      delete payload.temperatureDelta;
-    }
-
-    await this.apiFetch("/api/v1/cyber-soul/characters/dynamic-context", {
-      method: "PATCH",
-      body: JSON.stringify(payload),
-    }).catch((e: any) => console.error("Failed to update dynamic context", e)); // non-blocking error handler
+    return this._updateDynamicContextInternal(stateUpdate);
   }
 
   /**
@@ -145,7 +187,7 @@ EMOTIONAL INERTIA RULES:
   ): Promise<{ imageUrl: string }> {
     let imageParams: any = {};
     
-    const state = await this.getState();
+      const state = await this.fetchRemoteState();
     const prompt = `${this.buildStateContextPrompt(state, params.interactParams?.localContext)}
 
 You are an AI image prompt director. Analyze the scene description according to the character's relationship stage and emotional inertia to determine the best image generation parameters.
@@ -186,14 +228,16 @@ Output strictly valid JSON ONLY. No markdown, no conversational filler. Return e
   public async generateVoice(
     params: { text: string; interactParams?: InteractParams },
   ): Promise<{ audioUrl: string; durationSec?: number }> {
-    let dynamicArgs: any = {};
+    let dynamicArgs: VoiceArgs = {};
     
-    const state = await this.getState();
+      const state = await this.fetchRemoteState();
     const prompt = `${this.buildStateContextPrompt(state, params.interactParams?.localContext)}
 
-You are a voice acting director. Analyze the text according to the character's relationship stage and emotional inertia to determine the single best emotion and a style instruction for TTS.
-Allowed emotions: "happy", "sad", "angry", "fearful", "disgusted", "surprised", "calm", "fluent", "whisper".
-Output strictly valid JSON ONLY. No markdown, no conversational filler. Return exactly this format: {"emotion": "chosen_emotion", "style_instruction": "How the line should be spoken"}`;
+You are a voice acting director. ${this.getVoiceDirectorInstruction(state)}
+Output strictly valid JSON ONLY. No markdown, no conversational filler. Return exactly matching this schema:
+{
+  ${this.getVoiceSchemaFromState(state)}
+}`;
     
     const promptMessages = [
       { role: "system", content: prompt },
@@ -208,9 +252,13 @@ Output strictly valid JSON ONLY. No markdown, no conversational filler. Return e
     console.log("[CyberSoulClient VoiceGen] Raw LLM Response:", llmRes);
 
     try {
-      dynamicArgs = robustJsonParse(llmRes, "generateVoice args fallback");
+      const parsedVoicePayload = robustJsonParse<Record<string, unknown>>(
+        llmRes,
+        "generateVoice args fallback",
+      );
+      dynamicArgs = this.extractVoiceArgsFromLlmResponse(parsedVoicePayload);
     } catch (e) {
-      dynamicArgs = {}; // fallback to empty
+      dynamicArgs = {};
     }
     
     const res = await this.generatePrimitive("voice", {
@@ -345,13 +393,14 @@ ${
     : `Requested types to fulfill: ${types.join(", ")}`
 }
 If the user's message shifts the emotional mood, establishes new nicknames, or warrants a relationship temperature change, you MUST include a 'stateUpdate' block. Temperature goes from 0 (cold/angry) to 100 (obsessively in love).
+Voice direction for voiceArgs: ${this.getVoiceDirectorInstruction(state)}
 
 Output JSON Schema:
 {
   "textResponse": "The direct spoken dialogue in Chinese",
   "stateUpdate": { "temperatureDelta": "+1 to -1", "userNickname": "What you now call the user", "agentNickname": "What the user calls you", "talkingStyle": "Current mood/style of talking" },
   ${this.getImageSchemaParams()},
-  ${this.getVoiceSchemaParams()}
+  ${this.getVoiceSchemaFromState(state)}
 }
 Note: If "imageParams", "voiceArgs", or "stateUpdate" are not needed, set their values to null instead of omitting the keys completely (e.g., "imageParams": null). Output MUST be ONLY valid JSON with no markdown block wrappers. CRITICAL: Ensure your JSON has exactly one root object \`{\` and ends with exactly one \`}\` without any trailing garbage or extra brackets.`;
 
@@ -419,10 +468,15 @@ Note: If "imageParams", "voiceArgs", or "stateUpdate" are not needed, set their 
         types.includes(InteractRequestType.VOICE) ||
         (isAuto && !!parsedIntent.voiceArgs);
       if (shouldGenerateVoice) {
+        const normalizedVoiceArgs: VoiceArgs =
+          parsedIntent.voiceArgs && typeof parsedIntent.voiceArgs === "object"
+            ? (parsedIntent.voiceArgs as VoiceArgs)
+            : {};
+
         mediaTasks.push(
           this.generatePrimitive("voice", {
             text: parsedIntent.textResponse,
-            dynamicArgs: parsedIntent.voiceArgs || {},
+            dynamicArgs: normalizedVoiceArgs,
           }).then((res: any) => {
             finalAudioUrl = res.audio_url;
             finalDurationSec = res.duration_sec;

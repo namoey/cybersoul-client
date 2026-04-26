@@ -33,7 +33,7 @@ export class MinimaxProvider implements BaseLLMProvider {
     }
 
     const data = await response.json() as any;
-    console.log("[MinimaxProvider] API Response Payload:", data);
+    // console.debug("[MinimaxProvider] API Response Payload:", data);
     
     if (data?.base_resp?.status_code && data.base_resp.status_code !== 0) {
       throw new Error(`MiniMax SDK Error [${data.base_resp.status_code}]: ${data.base_resp.status_msg}`);

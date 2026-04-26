@@ -19,6 +19,8 @@ Cyber-Soul Service transforms static text-based virtual companions into fully re
 
 ## Installation
 
+**Prerequisites:** This SDK uses the native `fetch` API and requires **Node.js 18 or higher** (or a modern browser environment).
+
 You can install the SDK locally or via npm:
 
 ```bash
@@ -34,7 +36,7 @@ import { CyberSoulClient } from '@space3-npm/cybersoul-client';
 
 const client = new CyberSoulClient({
   characterKey: 'YOUR_CHARACTER_KEY_HASH', // Ties requests to your specific Cyber-Soul persona
-  backendUrl: 'http://localhost:3002',     // The Cyber-Soul core service URL
+  backendUrl: 'https://space3.cloud',      // The Cyber-Soul core service URL (e.g., http://localhost:3002 for local dev)
   llmConfig: {
     provider: 'minimax',
     apiKey: 'YOUR_MINIMAX_API_KEY',
@@ -105,3 +107,5 @@ The SDK perfectly mirrors the underlying Cyber-Soul backend capabilities via typ
 - `bootstrapCharacter(workspaceFiles)`: Automates character profile and prompt setup directly from local markdown configuration files.
 - `generateDailyScript()`: Cron-job helper instructing the AI scheduling system to compute the next block of dynamic events and plans.
 - `interact(params)`: The primary orchestrated multi-modal dialogue endpoint processing standard human <-> agent chat requests.
+- `ondemandEvent(params)`: Evaluates and triggers an on-demand event, using the LLM to intelligently decide if the character accepts the event and whether an outfit change is appropriate.
+- `consolidateCoreMemory(input)`: Uses edge LLM logic to merge recent events with the character's core memory and synchronizes the updated memory to the remote database.

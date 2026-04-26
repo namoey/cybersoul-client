@@ -1,6 +1,6 @@
 {
   "name": "@space3-npm/cybersoul-client",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "type": "module",
   "main": "dist/index.js",
   "module": "dist/index.js",
@@ -28,6 +28,9 @@
   "author": "Space3 Digital Media Tech Studio",
   "license": "MIT",
   "description": "Cyber-Soul multimodal character interaction SDK by Space3 Digital Media Tech Studio",
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "devDependencies": {
     "@types/node": "^25.6.0",
     "ts-node": "^10.9.2",

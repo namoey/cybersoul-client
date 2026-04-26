@@ -25,12 +25,39 @@ export interface InteractParams {
   onTextReady?: (textResponse: string) => void;
 }
 
+export interface OndemandEventParams {
+  eventDescription: string;
+  durationMins?: number;
+  interactParams?: InteractParams;
+}
+
+export interface OndemandEventResponse {
+  status: 'success' | 'error';
+  acceptEvent?: boolean;
+  reason?: string;
+  requiresOutfitChange?: boolean;
+  selectedOutfitId?: string;
+  error?: string;
+}
+
+export interface WardrobeItem {
+  id: string;
+  itemName: string;
+  category: string;
+  promptModifier: string;
+}
+
 export interface InteractResponse {
   status: 'success' | 'error';
   textResponse: string;
   imageUrl?: string;
   audioUrl?: string;
   durationSec?: number;
+  triggeredEvent?: {
+    eventDescription: string;
+    durationMins?: number;
+    outfitId?: string | null;
+  };
   error?: string;
 }
 
@@ -44,6 +71,11 @@ export interface DispatcherIntent {
     agentNickname?: string;
     talkingStyle?: string;
   };
+  triggerEvent?: {
+    eventDescription: string;
+    durationMins?: number;
+    outfitId?: string | null;
+  } | null;
 }
 
 export interface CoreMemory {

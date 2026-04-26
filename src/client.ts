@@ -1,6 +1,8 @@
 import {
   CyberSoulClientConfig,
   InteractParams,
+  OndemandEventParams,
+  OndemandEventResponse,
   InteractRequestType,
   DispatcherIntent,
   InteractResponse,
@@ -9,6 +11,7 @@ import {
   CoreMemory,
   VoiceArgs,
   VoiceModelState,
+  WardrobeItem,
 } from "./types.js";
 import { robustJsonParse } from "./utils/json.utils.js";
 import { MinimaxProvider } from "./providers/minimax.provider.js";
@@ -16,6 +19,8 @@ import { MinimaxProvider } from "./providers/minimax.provider.js";
 export class CyberSoulClient {
   private config: CyberSoulClientConfig;
   private llm: BaseLLMProvider;
+  private cachedWardrobeStr: string | null = null;
+  private cachedWardrobeTime: number = 0;
 
   constructor(config: CyberSoulClientConfig) {
     this.config = config;
@@ -94,7 +99,7 @@ EMOTIONAL INERTIA RULES:
   private getImageSchemaParams(): string {
     return `"imageParams": {
     "mode": "structured | full-prompt (use 'full-prompt' for highly dynamic actions)",
-    "full_prompt": "Use only if mode is full-prompt. Highly detailed visual description in ENGLISH.",
+    "full_prompt": "Use only if mode is full-prompt. Highly detailed visual description in ENGLISH. MUST align with the character's current Active Wardrobe unless the context/exposure explicitly demands otherwise (e.g., naked for intimate scenes).",
     "expression": "seductive | cute | happy | sleepy | dazed | pleased | default (Strictly choose ONE from this exact list. DO NOT invent new words like 'shy'.)",
     "condition": "normal | sweaty | wet | messy | oily (Strictly choose ONE from this exact list.)",
     "view_angle": "front | side | high_angle | from_below | boyfriend_view | selfie | mirror (Strictly choose ONE from this exact list.)",
@@ -164,6 +169,102 @@ EMOTIONAL INERTIA RULES:
   }
 
   /**
+   * Evaluates and triggers an on-demand event, intelligently deciding if an outfit change is needed.
+   */
+  public async ondemandEvent(params: OndemandEventParams): Promise<OndemandEventResponse> {
+    try {
+      // 1. Fetch current state and wardrobe items
+      const [state, availableOutfits] = await Promise.all([
+        this.fetchRemoteState(),
+        this.getWardrobePromptStr()
+      ]);
+
+      // 2. Build local Prompt
+      const systemPrompt = `${this.buildStateContextPrompt(state, params.interactParams?.localContext)}
+
+The user proposes a new event for you to participate in: "${params.eventDescription}".
+Evaluate this based on your current state and relationship stage.
+Decide if you will accept the event, and whether it requires changing your outfit.
+
+Available Wardrobe Outfits:
+${availableOutfits || "None available"}
+
+You MUST output ONLY a valid JSON object matching this exact structure:
+{
+  "acceptEvent": true,
+  "reason": "string (Why you accepted or declined, speaking in character)",
+  "requiresOutfitChange": false,
+  "selectedOutfitId": null
+}
+
+Example Valid Answer:
+{
+  "acceptEvent": true,
+  "reason": "Sure, I'd love to go to the cafe. It sounds relaxing.",
+  "requiresOutfitChange": false,
+  "selectedOutfitId": null
+}
+
+CRITICAL: Output MUST be ONLY valid JSON with no markdown block wrappers. Do NOT wrap the JSON in \`\`\`json or add conversational text.`;
+
+      const promptMessages = [
+        { role: "system", content: systemPrompt },
+        ...(params.interactParams?.history || []).map((msg: any) => ({
+          role: msg.role,
+          content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)
+        })),
+        {
+          role: "user",
+          content: `${params.interactParams?.userMessage || `Event Proposal: ${params.eventDescription}`}\n\n**CRITICAL REMINDER**: You MUST output your final response exactly in the JSON format specified in the system prompt. DO NOT output plain text directly.`,
+        },
+      ];
+
+      // 3. Evaluate with LLM
+      const rawLlmResponse = await this.llm.generate(promptMessages, 800, 0.5);
+      // console.debug("[CyberSoulClient ondemandEvent] Raw LLM Response:", rawLlmResponse);
+
+      let decisionData: any = {};
+      try {
+        decisionData = robustJsonParse<any>(rawLlmResponse, "OndemandEvent fallback");
+      } catch (e) {
+        throw new Error(`Failed to parse LLM decision for ondemandEvent. Raw response: ${rawLlmResponse}`);
+      }
+
+      // 4. API call if accepted
+      if (decisionData.acceptEvent === true) {
+        const payload = {
+          eventDescription: params.eventDescription,
+          durationMins: params.durationMins || 60,
+          outfitId: decisionData.requiresOutfitChange ? decisionData.selectedOutfitId : undefined,
+        };
+
+        const backendRes = await this.apiFetch("/api/v1/cyber-soul/characters/ondemand-event", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+
+        if (!backendRes.ok) {
+          throw new Error("Backend failed to schedule the on-demand event");
+        }
+      }
+
+      return {
+        status: "success",
+        acceptEvent: decisionData.acceptEvent,
+        reason: decisionData.reason,
+        requiresOutfitChange: decisionData.requiresOutfitChange,
+        selectedOutfitId: decisionData.selectedOutfitId,
+      };
+    } catch (error: any) {
+      console.error("[CyberSoulClient] ondemandEvent Error: ", error);
+      return {
+        status: "error",
+        error: error.message,
+      };
+    }
+  }
+
+  /**
    * Fetches the current dynamic context and daily state.
    */
   public async getState(): Promise<CharacterState> {
@@ -206,7 +307,7 @@ Output strictly valid JSON ONLY. No markdown, no conversational filler. Return e
     ];
 
     const llmRes = await this.llm.generate(promptMessages, 800, 0.4);
-    console.log("[CyberSoulClient ImageGen] Raw LLM Response:", llmRes);
+    // console.debug("[CyberSoulClient ImageGen] Raw LLM Response:", llmRes);
 
     try {
       const parsedImageArgs = robustJsonParse<any>(llmRes, "generateImage args fallback");
@@ -249,7 +350,7 @@ Output strictly valid JSON ONLY. No markdown, no conversational filler. Return e
     ];
 
     const llmRes = await this.llm.generate(promptMessages, 800, 0.3);
-    console.log("[CyberSoulClient VoiceGen] Raw LLM Response:", llmRes);
+    // console.debug("[CyberSoulClient VoiceGen] Raw LLM Response:", llmRes);
 
     try {
       const parsedVoicePayload = robustJsonParse<Record<string, unknown>>(
@@ -320,6 +421,35 @@ Output strictly valid JSON ONLY. No markdown, no conversational filler. Return e
     return json.data;
   }
 
+  private async getWardrobePromptStr(): Promise<string> {
+    const now = Date.now();
+    if (this.cachedWardrobeStr && (now - this.cachedWardrobeTime <= 5 * 60 * 1000)) {
+      return this.cachedWardrobeStr;
+    }
+
+    let availableOutfits = "None available";
+    try {
+      const wardrobeRes = await this.apiFetch("/api/v1/cyber-soul/wardrobe");
+      if (wardrobeRes.ok) {
+        let wardrobesPayload: any = {};
+        try {
+          wardrobesPayload = await wardrobeRes.json();
+        } catch (e) {}
+        
+        const wardrobes = wardrobesPayload.data || [];
+        if (wardrobes.length > 0) {
+          availableOutfits = wardrobes
+            .map((w: WardrobeItem) => `- ID: ${w.id} | Name: ${w.itemName} | Category: ${w.category}`)
+            .join("\n");
+        }
+      }
+    } catch (e) {}
+
+    this.cachedWardrobeStr = availableOutfits;
+    this.cachedWardrobeTime = now;
+    return availableOutfits;
+  }
+
   private async _updateDynamicContextInternal(
     stateUpdate: DispatcherIntent["stateUpdate"],
   ): Promise<void> {
@@ -343,7 +473,16 @@ Output strictly valid JSON ONLY. No markdown, no conversational filler. Return e
       method: "POST",
       body: JSON.stringify(payload),
     });
-    if (!res.ok) throw new Error(`Failed to generate ${type}`);
+    if (!res.ok) {
+      let errData;
+      try {
+        errData = await res.json();
+      } catch (e) {}
+      const msg = errData?.message || errData?.error || `Status ${res.status}`;
+      const err = new Error(`Failed to generate ${type}: ${msg}`);
+      (err as any).code = errData?.code || "UNKNOWN_ERROR";
+      throw err;
+    }
     return res.json();
   }
 
@@ -372,8 +511,12 @@ Output strictly valid JSON ONLY. No markdown, no conversational filler. Return e
 
   public async interact(params: InteractParams): Promise<InteractResponse> {
     try {
-      // 1. Sync remote context
-      const state = await this.fetchRemoteState();
+      // 1. Sync remote context and wardrobe (for event triggering)
+      //    We cache the wardrobe payload for 5 minutes to avoid huge payloads on every chat turn
+      const [state, availableOutfits] = await Promise.all([
+        this.fetchRemoteState(),
+        this.getWardrobePromptStr()
+      ]);
 
       // 2. Build local Prompt
       const types = this.normalizeRequestTypes(params.requestTypes);
@@ -381,6 +524,8 @@ Output strictly valid JSON ONLY. No markdown, no conversational filler. Return e
 
       // Combine state info into a clean descriptive context
       const systemPrompt = `${this.buildStateContextPrompt(state, params.localContext)}
+Available Wardrobe Outfits (For event triggers):
+${availableOutfits}
 
 The user has sent a message. You must evaluate the context and the user's message, and return a JSON object (no markdown formatting) that dictates the character's multi-modal response.
 
@@ -389,7 +534,8 @@ ${
     ? `Analyze the user's message to determine the appropriate response modalities (text, image, voice).
   - Always include 'textResponse'.
   - If the user explicitly asks to see a photo, look at you, or describing an action that warrants a photo, include 'imageParams'.
-  - If the user wants to hear you, or if appropriate for a voice message, include 'voiceArgs'.`
+  - If the user wants to hear you, or if appropriate for a voice message, include 'voiceArgs'.
+  - If the user proposes a new activity or hangout (e.g., "let's go to the cafe", "do you want to watch a movie?"), include 'triggerEvent' to schedule it.`
     : `Requested types to fulfill: ${types.join(", ")}`
 }
 If the user's message shifts the emotional mood, establishes new nicknames, or warrants a relationship temperature change, you MUST include a 'stateUpdate' block. Temperature goes from 0 (cold/angry) to 100 (obsessively in love).
@@ -399,10 +545,11 @@ Output JSON Schema:
 {
   "textResponse": "The direct spoken dialogue in Chinese",
   "stateUpdate": { "temperatureDelta": "+1 to -1", "userNickname": "What you now call the user", "agentNickname": "What the user calls you", "talkingStyle": "Current mood/style of talking" },
+  "triggerEvent": { "eventDescription": "Going to a cafe", "durationMins": 60, "outfitId": "optional wardrobe ID to change into if appropriate" },
   ${this.getImageSchemaParams()},
   ${this.getVoiceSchemaFromState(state)}
 }
-Note: If "imageParams", "voiceArgs", or "stateUpdate" are not needed, set their values to null instead of omitting the keys completely (e.g., "imageParams": null). Output MUST be ONLY valid JSON with no markdown block wrappers. CRITICAL: Ensure your JSON has exactly one root object \`{\` and ends with exactly one \`}\` without any trailing garbage or extra brackets.`;
+Note: If "imageParams", "voiceArgs", "stateUpdate", or "triggerEvent" are not needed, set their values to null instead of omitting the keys completely (e.g., "imageParams": null). Output MUST be ONLY valid JSON with no markdown block wrappers. CRITICAL: Ensure your JSON has exactly one root object \`{\` and ends with exactly one \`}\` without any trailing garbage or extra brackets.`;
 
       const promptMessages = [
         { role: "system", content: systemPrompt },
@@ -417,7 +564,7 @@ Note: If "imageParams", "voiceArgs", or "stateUpdate" are not needed, set their 
 
       // 3. Local Execute LLM
       const rawLlmResponse = await this.llm.generate(promptMessages, 1500, 0.7);
-      console.log("[CyberSoulClient] Raw LLM Response:", rawLlmResponse);
+      // console.debug("[CyberSoulClient] Raw LLM Response:", rawLlmResponse);
 
       let parsedIntent: DispatcherIntent;
       try {
@@ -435,7 +582,7 @@ Note: If "imageParams", "voiceArgs", or "stateUpdate" are not needed, set their 
           textResponse: rawLlmResponse.replace(/^[\`\s]+|[\`\s]+$/g, "").trim(),
         };
       }
-      console.log("[CyberSoulClient] Parsed Intent:", parsedIntent);
+      // console.debug("[CyberSoulClient] Parsed Intent:", parsedIntent);
 
       // 4. Update Backend State async
       if (parsedIntent && parsedIntent.stateUpdate) {
@@ -452,6 +599,20 @@ Note: If "imageParams", "voiceArgs", or "stateUpdate" are not needed, set their 
       let finalImageUrl: string | undefined = undefined;
       let finalAudioUrl: string | undefined = undefined;
       let finalDurationSec: number | undefined = undefined;
+
+      // Output Event Trigger
+      if (isAuto && parsedIntent.triggerEvent) {
+        mediaTasks.push(
+          this.apiFetch("/api/v1/cyber-soul/characters/ondemand-event", {
+            method: "POST",
+            body: JSON.stringify({
+              eventDescription: parsedIntent.triggerEvent.eventDescription,
+              durationMins: parsedIntent.triggerEvent.durationMins || 60,
+              outfitId: parsedIntent.triggerEvent.outfitId || undefined,
+            }),
+          }).catch(e => console.error("[CyberSoulClient] Auto-triggered ondemandEvent failed:", e))
+        );
+      }
 
       const shouldGenerateImage =
         types.includes(InteractRequestType.IMAGE) ||
@@ -493,6 +654,7 @@ Note: If "imageParams", "voiceArgs", or "stateUpdate" are not needed, set their 
         imageUrl: finalImageUrl,
         audioUrl: finalAudioUrl,
         durationSec: finalDurationSec,
+        triggeredEvent: parsedIntent.triggerEvent || undefined,
       };
     } catch (error: any) {
       console.error("[CyberSoulClient] Interface Error: ", error);

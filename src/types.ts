@@ -58,13 +58,19 @@ export interface InteractResponse {
     durationMins?: number;
     outfitId?: string | null;
   };
-  error?: string;
+  stateUpdate?: DispatcherIntent['stateUpdate'];  userAnalysis?: DispatcherIntent['userAnalysis'];  error?: string;
 }
 
 export interface DispatcherIntent {
   textResponse?: string;
   imageParams?: any;
   voiceArgs?: VoiceArgs | null;
+  userAnalysis?: {
+    newFactsLearned: {
+      category: "nickname" | "occupation" | "age" | "gender" | "hobby" | "trait" | "communicationStyle" | "boundary";
+      value: string;
+    }[];
+  };
   stateUpdate?: {
     temperatureDelta?: string | number;
     userNickname?: string;
@@ -134,8 +140,66 @@ export interface CharacterState {
   personality_traits?: string;
   interaction_boundaries?: string;
   communication_style?: string;
+  user_codex?: any;
 }
 
 export interface BaseLLMProvider {
   generate(messages: { role: string; content: string }[], maxTokens?: number, temperature?: number): Promise<string>;
+}
+
+export type ModelCustomConfigValueType = 'string' | 'stringArray' | 'number' | 'integer' | 'boolean' | 'enum';
+
+export interface IModelCustomConfigField {
+  key: string;
+  label: string;
+  valueType: ModelCustomConfigValueType;
+  customerFacing?: boolean;
+  isFile?: boolean;
+  description?: string;
+  required?: boolean;
+  defaultValue?: string | number | boolean | string[];
+  minItems?: number;
+  maxItems?: number;
+  min?: number;
+  max?: number;
+  step?: number;
+  enumOptions?: string[];
+  options?: string[];
+}
+
+export interface IVoiceModel {
+  id: string;
+  name: string;
+  ttsProvider: string;
+  voiceConfigPayload: Record<string, unknown>;
+  dynamicParamPromptTemplate: string;
+  dynamicParams: Array<{
+    name: string;
+    description: string;
+    type: string;
+    required: boolean;
+    default?: unknown;
+  }>;
+  voiceOptions: Array<{
+    id: string;
+    name: string;
+    description?: string;
+    configPatch: Record<string, unknown>;
+    dynamicParamPromptTemplate?: string;
+    sampleUrl?: string;
+  }>;
+  voiceCustomConfigDefinition?: IModelCustomConfigField[];
+  isPublic: boolean;
+  pointsPerGeneration: number;
+}
+
+export interface ICharacterProfile {
+  id: string;
+  name: string;
+  voiceModelId?: string;
+  voiceModelOptionId?: string;
+  voiceCustomConfig?: Record<string, Record<string, unknown>>;
+  visualModelId?: string;
+  visualCustomConfig?: Record<string, Record<string, unknown>>;
+  [key: string]: unknown; // Allow other properties to exist without breaking SDK clients that don't need them fully defined
 }

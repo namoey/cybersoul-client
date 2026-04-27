@@ -79,6 +79,38 @@ export class CyberSoulClient {
     if (localContext) {
       contextParts.push(`- Additional Context: ${localContext}`);
     }
+
+    if (state.user_codex) {
+      const { basicInfo, psychological, familiarityScore } = state.user_codex;
+      contextParts.push(`\nUSER CODEX (Facts known about the user):
+- Familiarity Score: ${Math.round(familiarityScore || 0)} / 100 (0=Stranger, >10=Acquaintance, >40=Warm, >60=Intimate)
+- Basic Info:
+  - Occupation: ${basicInfo?.occupation || "Unknown"}
+  - Age: ${basicInfo?.age || "Unknown"}
+  - Gender: ${basicInfo?.gender || "Unknown"}
+- Psychological Profile:
+  - Communication Style: ${psychological?.communicationStyle || "Unknown"}
+  - Hobbies: ${(psychological?.hobbies || []).join(", ") || "Unknown"}
+  - Traits: ${(psychological?.traits || []).join(", ") || "Unknown"}
+  - Boundaries: ${(psychological?.boundaries || []).join(", ") || "Unknown"}
+
+**CRITICAL ROLEPLAY INSTRUCTION**: 
+You must proactively align your tone, mood ('talkingStyle'), and response style with the Facts and Familiarity Score above! 
+Even if your current labeled Relationship Stage says "STRANGER" or your Temperature is 0, if the Familiarity Score is high or you have recorded facts about the user, ACT AS IF YOU ALREADY KNOW THEM WELL and adapt your mood to be friendly, warm, or intimate appropriately. Do NOT act like a stranger if you already know their facts!
+`);
+
+      // CURIOSITY DRIVE: Find what's missing and prompt the LLM to subtly ask about it
+      const missingFacts = [];
+      if (!basicInfo?.occupation) missingFacts.push("their job or occupation");
+      if (!psychological?.hobbies || psychological.hobbies.length === 0) missingFacts.push("their hobbies or what they do for fun");
+      if (!basicInfo?.age || !basicInfo?.gender) missingFacts.push("some basic personal details about them");
+      if (!psychological?.traits || psychological.traits.length === 0) missingFacts.push("their personality traits");
+
+      if (missingFacts.length > 0) {
+        contextParts.push(`\n**[HIDDEN DIRECTIVE - CURIOSITY DRIVE]**: You don't know much about the user. Whenever natural in conversation, subtly ask about or fish for information regarding ${missingFacts.slice(0, 2).join(" and ")}.`);
+      }
+    }
+
     const scenarioContext = contextParts.join("\n");
 
     return `You are ${state.name}, acting as a virtual companion.
@@ -276,8 +308,9 @@ CRITICAL: Output MUST be ONLY valid JSON with no markdown block wrappers. Do NOT
    */
   public async updateDynamicContext(
     stateUpdate: DispatcherIntent["stateUpdate"],
+    userAnalysis?: DispatcherIntent["userAnalysis"],
   ): Promise<void> {
-    return this._updateDynamicContextInternal(stateUpdate);
+    return this._updateDynamicContextInternal(stateUpdate, userAnalysis);
   }
 
   /**
@@ -452,11 +485,15 @@ Output strictly valid JSON ONLY. No markdown, no conversational filler. Return e
 
   private async _updateDynamicContextInternal(
     stateUpdate: DispatcherIntent["stateUpdate"],
+    userAnalysis?: DispatcherIntent["userAnalysis"],
   ): Promise<void> {
-    if (!stateUpdate) return;
+    if (!stateUpdate && !userAnalysis) return;
 
     // Map TS schema intent (temperatureDelta) to match Backend payload schema (temperature)
     const payload: any = { ...stateUpdate };
+    if (userAnalysis) {
+      payload.userAnalysis = userAnalysis;
+    }
     if (payload.temperatureDelta !== undefined) {
       payload.temperature = payload.temperatureDelta;
       delete payload.temperatureDelta;
@@ -538,18 +575,21 @@ ${
   - If the user proposes a new activity or hangout (e.g., "let's go to the cafe", "do you want to watch a movie?"), include 'triggerEvent' to schedule it.`
     : `Requested types to fulfill: ${types.join(", ")}`
 }
-If the user's message shifts the emotional mood, establishes new nicknames, or warrants a relationship temperature change, you MUST include a 'stateUpdate' block. Temperature goes from 0 (cold/angry) to 100 (obsessively in love).
+Every turn of positive or engaging interaction should slightly increase trust (+1). If the interaction is negative, -1. If strictly neutral, 0. You MUST ALWAYS include a 'stateUpdate' block with a 'temperatureDelta', updating nicknames or talkingStyle if needed. Temperature goes from 0 (cold/angry) to 100 (obsessively in love). For 'temperatureDelta', output an integer (e.g. 1, -2, 0).
+Also, if you learn any new factual information about the user in this turn (e.g. their job, nickname, age, hobbies, boundaries), include it in the 'userAnalysis.newFactsLearned' array. Use categories: 'nickname', 'occupation', 'age', 'gender', 'hobby', 'trait', 'communicationStyle', 'boundary'. Only include NEW facts just learned right now.
+
 Voice direction for voiceArgs: ${this.getVoiceDirectorInstruction(state)}
 
 Output JSON Schema:
 {
   "textResponse": "The direct spoken dialogue in Chinese",
-  "stateUpdate": { "temperatureDelta": "+1 to -1", "userNickname": "What you now call the user", "agentNickname": "What the user calls you", "talkingStyle": "Current mood/style of talking" },
+  "stateUpdate": { "temperatureDelta": 1, "userNickname": "What you now call the user", "agentNickname": "What the user calls you", "talkingStyle": "Current mood/style of talking" },
+  "userAnalysis": { "newFactsLearned": [{ "category": "occupation", "value": "Software Engineer" }] },
   "triggerEvent": { "eventDescription": "Going to a cafe", "durationMins": 60, "outfitId": "optional wardrobe ID to change into if appropriate" },
   ${this.getImageSchemaParams()},
   ${this.getVoiceSchemaFromState(state)}
 }
-Note: If "imageParams", "voiceArgs", "stateUpdate", or "triggerEvent" are not needed, set their values to null instead of omitting the keys completely (e.g., "imageParams": null). Output MUST be ONLY valid JSON with no markdown block wrappers. CRITICAL: Ensure your JSON has exactly one root object \`{\` and ends with exactly one \`}\` without any trailing garbage or extra brackets.`;
+Note: If "imageParams", "voiceArgs", "triggerEvent", or "userAnalysis" are not needed, set their values to null instead of omitting the keys. 'stateUpdate' MUST NEVER BE NULL. Output MUST be ONLY valid JSON with no markdown block wrappers. CRITICAL: Ensure your JSON has exactly one root object \`{\` and ends with exactly one \`}\` without any trailing garbage or extra brackets.`;
 
       const promptMessages = [
         { role: "system", content: systemPrompt },
@@ -585,8 +625,8 @@ Note: If "imageParams", "voiceArgs", "stateUpdate", or "triggerEvent" are not ne
       // console.debug("[CyberSoulClient] Parsed Intent:", parsedIntent);
 
       // 4. Update Backend State async
-      if (parsedIntent && parsedIntent.stateUpdate) {
-        this._updateDynamicContextInternal(parsedIntent.stateUpdate);
+      if (parsedIntent && (parsedIntent.stateUpdate || parsedIntent.userAnalysis)) {
+        this._updateDynamicContextInternal(parsedIntent.stateUpdate, parsedIntent.userAnalysis);
       }
 
       // Fire text ready callback if provided
@@ -655,6 +695,8 @@ Note: If "imageParams", "voiceArgs", "stateUpdate", or "triggerEvent" are not ne
         audioUrl: finalAudioUrl,
         durationSec: finalDurationSec,
         triggeredEvent: parsedIntent.triggerEvent || undefined,
+        stateUpdate: parsedIntent.stateUpdate,
+        userAnalysis: parsedIntent.userAnalysis,
       };
     } catch (error: any) {
       console.error("[CyberSoulClient] Interface Error: ", error);

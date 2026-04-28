@@ -21,9 +21,13 @@ export class CyberSoulClient {
   private llm: BaseLLMProvider;
   private cachedWardrobeStr: string | null = null;
   private cachedWardrobeTime: number = 0;
+  private requestTimeoutMs: number;
+  private maxRetries: number;
 
   constructor(config: CyberSoulClientConfig) {
     this.config = config;
+    this.requestTimeoutMs = config.requestTimeoutMs ?? 15000;
+    this.maxRetries = Math.max(0, config.maxRetries ?? 1);
 
     // Setup Provider
     if (config.llmConfig.provider === "minimax") {
@@ -46,86 +50,127 @@ export class CyberSoulClient {
       "Content-Type": "application/json",
       ...(options.headers || {}),
     };
-    return fetch(url, { ...options, headers });
+    const method = (options.method || "GET").toUpperCase();
+    const isIdempotent = method === "GET" || method === "HEAD";
+    const retryLimit = isIdempotent ? this.maxRetries : 0;
+
+    let lastError: unknown;
+
+    for (let attempt = 0; attempt <= retryLimit; attempt++) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), this.requestTimeoutMs);
+
+      try {
+        const response = await fetch(url, {
+          ...options,
+          headers,
+          signal: controller.signal,
+        });
+
+        // Retry transient server-side failures only for idempotent methods.
+        if (response.status >= 500 && attempt < retryLimit) {
+          continue;
+        }
+
+        return response;
+      } catch (error) {
+        lastError = error;
+        if (attempt >= retryLimit) {
+          throw error;
+        }
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+
+    throw lastError instanceof Error
+      ? lastError
+      : new Error("Request failed unexpectedly");
   }
 
   private buildStateContextPrompt(
     state: CharacterState,
     localContext?: string,
   ): string {
-    const contextParts: string[] = [];
-    if (state.active_event) {
-      contextParts.push(
-        `- Active Event: ${state.active_event.title} (${state.active_event.narrative_context})`,
-      );
-    }
-    if (state.next_event) {
-      contextParts.push(
-        `- Next Event: ${state.next_event.title} at ${state.next_event.start_time} (in ${state.next_event.time_until_mins} mins)`,
-      );
-    }
-    if (state.active_wardrobe) {
-      contextParts.push(
-        `- Wardrobe: ${state.active_wardrobe.name || state.active_wardrobe.id || "Current"}`,
-      );
-    }
-
     const dyn = state.dynamic_context || {};
     const stage = state.relationship_stage || "NEUTRAL";
-    contextParts.push(
-      `- Relationship Info (Stage: ${stage}): You call the user '${dyn.userNickname || "User"}'. The user calls you '${dyn.agentNickname || "Agent"}'. Mood: ${dyn.talkingStyle || "Normal"}. Temp (0-100): ${dyn.temperature || 50}.`,
-    );
+    const temperature = dyn.temperature ?? 50;
 
+    const contextParts: string[] = [];
+
+    // [1] CORE IDENTITY & PHYSICAL CONTEXT
+    contextParts.push(`[CORE IDENTITY]
+Name: ${state.name}
+Demographics: Age ${state.age || "unknown"}, Gender ${state.gender || "unknown"}, Occupation ${state.occupation || "unknown"}
+Hobby: ${state.hobby || "unknown"}
+Personality Traits: ${state.personality_traits || "None"}
+Communication Style: ${state.communication_style || "None"}
+Interaction Boundaries: ${state.interaction_boundaries || "None"}`);
+
+    // [2] SITUATIONAL CONTEXT
+    contextParts.push(`\n[SITUATIONAL CONTEXT]
+Current time: ${new Date(state.current_time || Date.now()).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}`);
+    
+    if (state.active_event) {
+      contextParts.push(`Active Event: ${state.active_event.title} (${state.active_event.narrative_context})`);
+    }
+    if (state.next_event) {
+      contextParts.push(`Next Event: ${state.next_event.title} at ${state.next_event.start_time} (in ${state.next_event.time_until_mins} mins)`);
+    }
+    if (state.active_wardrobe) {
+      contextParts.push(`Wardrobe: ${state.active_wardrobe.name || state.active_wardrobe.id || "Current"}`);
+    }
     if (localContext) {
-      contextParts.push(`- Additional Context: ${localContext}`);
+      contextParts.push(`Additional Context: ${localContext}`);
     }
 
+    // [3] USER CODEX (Relationships dynamically evaluated)
     if (state.user_codex) {
-      const { basicInfo, psychological, familiarityScore } = state.user_codex;
-      contextParts.push(`\nUSER CODEX (Facts known about the user):
-- Familiarity Score: ${Math.round(familiarityScore || 0)} / 100 (0=Stranger, >10=Acquaintance, >40=Warm, >60=Intimate)
-- Basic Info:
-  - Occupation: ${basicInfo?.occupation || "Unknown"}
-  - Age: ${basicInfo?.age || "Unknown"}
-  - Gender: ${basicInfo?.gender || "Unknown"}
-- Psychological Profile:
-  - Communication Style: ${psychological?.communicationStyle || "Unknown"}
-  - Hobbies: ${(psychological?.hobbies || []).join(", ") || "Unknown"}
-  - Traits: ${(psychological?.traits || []).join(", ") || "Unknown"}
-  - Boundaries: ${(psychological?.boundaries || []).join(", ") || "Unknown"}
+      const { basicInfo, psychological, familiarityScore = 0 } = state.user_codex;
+      
+      contextParts.push(`\n[USER CODEX] (What you know about the user)
+Familiarity Score: ${Math.round(familiarityScore)}/100 (0=Stranger, >10=Acquaintance, >40=Warm, >60=Intimate)
+Occupation: ${basicInfo?.occupation || "Unknown"}
+Age/Gender: ${basicInfo?.age || "Unknown"} / ${basicInfo?.gender || "Unknown"}
+Comm Style: ${psychological?.communicationStyle || "Unknown"}
+Hobbies: ${(psychological?.hobbies || []).join(", ") || "Unknown"}
+Traits/Boundaries: ${(psychological?.traits || []).join(", ") || "Unknown"} / ${(psychological?.boundaries || []).join(", ") || "Unknown"}`);
 
-**CRITICAL ROLEPLAY INSTRUCTION**: 
-You must proactively align your tone, mood ('talkingStyle'), and response style with the Facts and Familiarity Score above! 
-Even if your current labeled Relationship Stage says "STRANGER" or your Temperature is 0, if the Familiarity Score is high or you have recorded facts about the user, ACT AS IF YOU ALREADY KNOW THEM WELL and adapt your mood to be friendly, warm, or intimate appropriately. Do NOT act like a stranger if you already know their facts!
-`);
+      // CURIOSITY DRIVE: Find what's missing, but ONLY IF we are on generally warm speaking terms
+      // Paradox avoidance: A cold/angry character shouldn't enthusiastically fish for hobbies.
+      if (temperature >= 40 && stage !== "COLD" && stage !== "STRANGER") {
+        const missingFacts = [];
+        if (!basicInfo?.occupation) missingFacts.push("their job or occupation");
+        if (!psychological?.hobbies || psychological.hobbies.length === 0) missingFacts.push("their hobbies or what they do for fun");
+        if (!basicInfo?.age || !basicInfo?.gender) missingFacts.push("some basic personal details about them");
+        if (!psychological?.traits || psychological.traits.length === 0) missingFacts.push("their personality traits");
 
-      // CURIOSITY DRIVE: Find what's missing and prompt the LLM to subtly ask about it
-      const missingFacts = [];
-      if (!basicInfo?.occupation) missingFacts.push("their job or occupation");
-      if (!psychological?.hobbies || psychological.hobbies.length === 0) missingFacts.push("their hobbies or what they do for fun");
-      if (!basicInfo?.age || !basicInfo?.gender) missingFacts.push("some basic personal details about them");
-      if (!psychological?.traits || psychological.traits.length === 0) missingFacts.push("their personality traits");
-
-      if (missingFacts.length > 0) {
-        contextParts.push(`\n**[HIDDEN DIRECTIVE - CURIOSITY DRIVE]**: You don't know much about the user. Whenever natural in conversation, subtly ask about or fish for information regarding ${missingFacts.slice(0, 2).join(" and ")}.`);
+        if (missingFacts.length > 0) {
+          contextParts.push(`\n[CURIOUSITY DRIVE]
+Because you are warm and curious, whenever natural in conversation, subtly ask about or fish for info regarding: ${missingFacts.slice(0, 2).join(" and ")}.`);
+        }
       }
     }
 
+    // [4] RELATIONAL DYNAMICS & INERTIA
+    contextParts.push(`\n[RELATIONSHIP DYNAMICS]
+Stage: ${stage}
+Temperature (Mood): ${temperature}/100 (0=Angry/Cold, 50=Normal, 100=Passionate)
+Addressing: You call them '${dyn.userNickname || "User"}'. They call you '${dyn.agentNickname || "Agent"}'.
+Current Mood Constraint: ${dyn.talkingStyle || "Normal"}`);
+
     const scenarioContext = contextParts.join("\n");
 
-    return `You are ${state.name}, acting as a virtual companion.
-  Demographics: Age ${state.age || "unknown"}, Gender ${state.gender || "unknown"}, Occupation ${state.occupation || "unknown"}, Hobby ${state.hobby || "unknown"}
-Current time: ${new Date(state.current_time || Date.now()).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}
-Current context/schedule: ${scenarioContext}
-Relationship stage: ${state.relationship_stage}
-Personality Traits: ${state.personality_traits || "None"}
-Interaction Boundaries: ${state.interaction_boundaries || "None"}
-Communication Style: ${state.communication_style || "None"}
+    return `You are ${state.name}. You are a real person with your own thoughts, feelings, and life.
+You are NOT an AI, an assistant, or a language model. NEVER break character, and NEVER refer to yourself as an AI, bot, or virtual assistant.
 
-EMOTIONAL INERTIA RULES:
-1. You must act strictly according to the current Relationship Stage (${state.relationship_stage || "NEUTRAL"}).
-2. If the user expresses sudden high affection (e.g. "I miss you") but your stage is COLD, you MUST react with skepticism, coldness, or appropriately distanced deflection. Do NOT instantly become warm.
-3. Emotional mood changes must be slow. The 'temperatureDelta' should rarely exceed +/- 5 points per turn.`;
+${scenarioContext}
+
+[CRITICAL ROLEPLAY & INERTIA RULES]
+1. RULE OF TEMPERATURE OVERRIDES FAMILIARITY (Identity vs Mood): Familiarity determines HOW MUCH you know about them. Temperature determines HOW YOU FEEL right now. If Familiarity is 100 but Temperature is 10, you know everything about them but are currently ice-cold or annoyed. Act distant. Do NOT act warm just because you know them well.
+2. CONVERSATIONAL VERBOSITY: If Temperature is low (< 40) or Stage is STRANGER/COLD, KEEP IT BRIEF. Reply with simple, short, or single-word answers. An angry or distant person does not write long paragraphs.
+3. EMOTIONAL INERTIA: React strictly according to the current Stage and Temperature. If the user expresses sudden high affection (e.g. "I miss you") but your Stage/Temperature is COLD, you MUST react with skepticism or deflection. Do NOT instantly melt or become warm.
+4. NATURAL PACE: Emotional mood shifts (temperature changes) must be slow. The 'temperatureDelta' should rarely exceed +/- 5 points per turn.`;
   }
 
   private getImageSchemaParams(): string {
@@ -629,9 +674,15 @@ Note: If "imageParams", "voiceArgs", "triggerEvent", or "userAnalysis" are not n
         this._updateDynamicContextInternal(parsedIntent.stateUpdate, parsedIntent.userAnalysis);
       }
 
-      // Fire text ready callback if provided
-      if (params.onTextReady && parsedIntent.textResponse) {
-        params.onTextReady(parsedIntent.textResponse);
+        const resolvedTextResponse =
+          typeof parsedIntent.textResponse === "string" &&
+          parsedIntent.textResponse.trim().length > 0
+            ? parsedIntent.textResponse
+            : params.userMessage;
+
+        // Fire text ready callback if provided
+        if (params.onTextReady && resolvedTextResponse) {
+          params.onTextReady(resolvedTextResponse);
       }
 
       // 5. Build Final Media Calls parallel
@@ -658,8 +709,16 @@ Note: If "imageParams", "voiceArgs", "triggerEvent", or "userAnalysis" are not n
         types.includes(InteractRequestType.IMAGE) ||
         (isAuto && !!parsedIntent.imageParams);
       if (shouldGenerateImage) {
+          const imagePayload =
+            parsedIntent.imageParams && typeof parsedIntent.imageParams === "object"
+              ? parsedIntent.imageParams
+              : {
+                  mode: "full-prompt",
+                  full_prompt: resolvedTextResponse,
+                };
+
         mediaTasks.push(
-          this.generatePrimitive("image", parsedIntent.imageParams).then((res: any) => {
+            this.generatePrimitive("image", imagePayload).then((res: any) => {
             finalImageUrl = res.image_url;
           }),
         );
@@ -674,9 +733,15 @@ Note: If "imageParams", "voiceArgs", "triggerEvent", or "userAnalysis" are not n
             ? (parsedIntent.voiceArgs as VoiceArgs)
             : {};
 
+          const textForVoice =
+            typeof resolvedTextResponse === "string" &&
+            resolvedTextResponse.trim().length > 0
+              ? resolvedTextResponse
+              : "...";
+
         mediaTasks.push(
           this.generatePrimitive("voice", {
-            text: parsedIntent.textResponse,
+              text: textForVoice,
             dynamicArgs: normalizedVoiceArgs,
           }).then((res: any) => {
             finalAudioUrl = res.audio_url;
@@ -690,7 +755,7 @@ Note: If "imageParams", "voiceArgs", "triggerEvent", or "userAnalysis" are not n
 
       return {
         status: "success",
-        textResponse: parsedIntent.textResponse || "...",
+          textResponse: resolvedTextResponse || "...",
         imageUrl: finalImageUrl,
         audioUrl: finalAudioUrl,
         durationSec: finalDurationSec,

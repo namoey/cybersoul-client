@@ -1,5 +1,5 @@
 export interface LLMConfig {
-  provider: 'minimax' | 'openai'; // Extendable
+  provider: 'minimax';
   apiKey: string;
   model: string;
 }
@@ -8,6 +8,8 @@ export interface CyberSoulClientConfig {
   characterKey: string;
   backendUrl: string;
   llmConfig: LLMConfig;
+  requestTimeoutMs?: number;
+  maxRetries?: number;
 }
 
 export enum InteractRequestType {

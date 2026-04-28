@@ -26,7 +26,7 @@ export class CyberSoulClient {
 
   constructor(config: CyberSoulClientConfig) {
     this.config = config;
-    this.requestTimeoutMs = config.requestTimeoutMs ?? 15000;
+    this.requestTimeoutMs = config.requestTimeoutMs ?? 120000;
     this.maxRetries = Math.max(0, config.maxRetries ?? 1);
 
     // Setup Provider
@@ -74,9 +74,15 @@ export class CyberSoulClient {
 
         return response;
       } catch (error) {
-        lastError = error;
+        if (error instanceof Error && error.name === "AbortError") {
+          lastError = new Error(
+            `Request timed out after ${this.requestTimeoutMs}ms: ${method} ${endpoint}`,
+          );
+        } else {
+          lastError = error;
+        }
         if (attempt >= retryLimit) {
-          throw error;
+          throw lastError;
         }
       } finally {
         clearTimeout(timeout);

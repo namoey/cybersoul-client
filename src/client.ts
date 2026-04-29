@@ -314,11 +314,11 @@ CRITICAL: Output MUST be ONLY valid JSON with no markdown block wrappers. Do NOT
       // 4. API call if accepted
       if (decisionData.acceptEvent === true) {
         const payload = {
-          eventTitle: decisionData.eventTitle || decisionData.title || params.eventDescription?.substring(0, 20) || "On-demand Event",
-          eventDescription: decisionData.eventDescription || params.eventDescription,
+          eventTitle: decisionData.eventTitle,
+          eventDescription: decisionData.eventDescription,
           durationMins: decisionData.durationMins || params.durationMins || 60,
           outfitId: decisionData.outfitId || undefined,
-          scheduledStartTimeStr: decisionData.scheduledStartTimeStr || decisionData.startTime || undefined,
+          scheduledStartTimeStr: decisionData.scheduledStartTimeStr || undefined,
         };
 
         const backendRes = await this.apiFetch("/api/v1/cyber-soul/characters/ondemand-event", {
@@ -706,11 +706,11 @@ Note: If "imageParams", "voiceArgs", "triggerEvent", or "userAnalysis" are not n
           this.apiFetch("/api/v1/cyber-soul/characters/ondemand-event", {
             method: "POST",
             body: JSON.stringify({
-              eventTitle: parsedIntent.triggerEvent.eventTitle || (parsedIntent.triggerEvent as any).title || (parsedIntent.triggerEvent.eventDescription || "Event").substring(0, 20),
-              eventDescription: parsedIntent.triggerEvent.eventDescription || (parsedIntent.triggerEvent as any).description || "Event",
+              eventTitle: parsedIntent.triggerEvent.eventTitle,
+              eventDescription: parsedIntent.triggerEvent.eventDescription,
               durationMins: parsedIntent.triggerEvent.durationMins || 60,
               outfitId: parsedIntent.triggerEvent.outfitId || undefined,
-              scheduledStartTimeStr: parsedIntent.triggerEvent.scheduledStartTimeStr || (parsedIntent.triggerEvent as any).startTime || undefined,
+              scheduledStartTimeStr: parsedIntent.triggerEvent.scheduledStartTimeStr || undefined,
             }),
           }).catch(e => console.error("[CyberSoulClient] Auto-triggered ondemandEvent failed:", e))
         );

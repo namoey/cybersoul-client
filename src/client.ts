@@ -276,7 +276,7 @@ You MUST output ONLY a valid JSON object matching this exact structure:
 {
   "acceptEvent": true,
   "reason": "string (Why you accepted or declined, speaking in character)",
-  "eventTitle": "string (A short title for the event, e.g. 'Coffee with 哥哥')",
+  "eventTitle": "string (A short title detailing exactly WHAT to do and WITH WHOM, e.g. 'Coffee with 哥哥')",
   "eventDescription": "string (Detailed description of the future event, virtual scene, and story with the participant)",
   "requiresOutfitChange": false,
   "selectedOutfitId": null,
@@ -287,7 +287,7 @@ Example Valid Answer:
 {
   "acceptEvent": true,
   "reason": "Sure, I'd love to go to the cafe at 2:30 PM. It sounds relaxing.",
-  "eventTitle": "Coffee at the Starry Cafe",
+  "eventTitle": "Have Coffee with the user at the Starry Cafe",
   "eventDescription": "Meeting at the Starry Cafe at 2:30 PM, chatting about life while sipping lattes facing the window.",
   "requiresOutfitChange": false,
   "selectedOutfitId": null,
@@ -322,7 +322,7 @@ CRITICAL: Output MUST be ONLY valid JSON with no markdown block wrappers. Do NOT
       // 4. API call if accepted
       if (decisionData.acceptEvent === true) {
         const payload = {
-          eventTitle: decisionData.eventTitle || "Event",
+          eventTitle: decisionData.eventTitle || "On-demand Event",
           eventDescription: decisionData.eventDescription || params.eventDescription,
           durationMins: params.durationMins || 60,
           outfitId: decisionData.requiresOutfitChange ? decisionData.selectedOutfitId : undefined,
@@ -645,7 +645,7 @@ Output JSON Schema:
   "textResponse": "The direct spoken dialogue in Chinese",
   "stateUpdate": { "temperatureDelta": 1, "userNickname": "What you now call the user", "agentNickname": "What the user calls you", "talkingStyle": "Current mood/style of talking" },
   "userAnalysis": { "newFactsLearned": [{ "category": "occupation", "value": "Software Engineer" }] },
-  "triggerEvent": { "eventTitle": "Coffee at the Starry Cafe", "eventDescription": "Meeting at the Starry Cafe at 2:30 PM, chatting about life while sipping lattes facing the window.", "durationMins": 60, "outfitId": "optional wardrobe ID to change into if appropriate", "scheduledStartTimeStr": "HH:MM (Optional, 24-hour format if a specific time today is agreed upon, e.g., '14:30', otherwise null)" },
+  "triggerEvent": { "eventTitle": "Have Coffee with the user at the Starry Cafe (Must include WHAT to do and WITH WHOM)", "eventDescription": "Meeting at the Starry Cafe at 2:30 PM, chatting about life while sipping lattes facing the window.", "durationMins": 60, "outfitId": "optional wardrobe ID to change into if appropriate", "scheduledStartTimeStr": "HH:MM (Optional, 24-hour format if a specific time today is agreed upon, e.g., '14:30', otherwise null)" },
   ${this.getImageSchemaParams()},
   ${this.getVoiceSchemaFromState(state)}
 }

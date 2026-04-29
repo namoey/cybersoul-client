@@ -9,6 +9,7 @@ import {
   BaseLLMProvider,
   CharacterState,
   CoreMemory,
+  UserCodex,
   VoiceArgs,
   VoiceModelState,
   WardrobeItem,
@@ -792,11 +793,11 @@ Note: If "imageParams", "voiceArgs", "triggerEvent", or "userAnalysis" are not n
   }
 
   /**
-   * Consolidate Core Memory using edge LLM logic and sync to remote DB
+   * Consolidate Core Memory and User Codex using edge LLM logic and sync to remote DB
    */
   async consolidateCoreMemory(input: {
     events: string;
-  }): Promise<{ status: string; coreMemory?: CoreMemory; error?: string }> {
+  }): Promise<{ status: string; coreMemory?: CoreMemory; userCodex?: UserCodex; error?: string }> {
     try {
       const state = await this.getState();
       const currentMemory = state.core_memory || {
@@ -806,30 +807,61 @@ Note: If "imageParams", "voiceArgs", "triggerEvent", or "userAnalysis" are not n
         keyEvents: [],
         appointments: [],
       };
+      const currentUserCodex = state.user_codex || {
+        basicInfo: {},
+        psychological: {
+          hobbies: [],
+          traits: [],
+          communicationStyle: "",
+          boundaries: [],
+        }
+      };
 
       const systemPrompt = `You are an AI Memory Consolidation Engine for a virtual companion.
-Your task is to merge the 'Current Core Memory' with 'New Daily Events & Information' and output an updated 'Core Memory' JSON object.
+Your task is to merge the 'Current Core Memory' and 'Current User Codex' with 'New Daily Events & Information' and output updated 'coreMemory' and 'userCodex' JSON objects.
 
-**Rules:**
+**Rules for Core Memory:**
 1. **Condense:** Keep items brief. Remove resolving or expired story arcs.
 2. **Retain Value:** Never delete the absolute core identity or major relationship milestones.
 3. **Time-Aware Garbage Collection:** Compare the Current Time to appointments. You MUST remove any appointments that are in the past. If the completed appointment was heavily significant, summarize it into 'keyEvents'.
 4. **Appointment Structure:** the 'title' and 'context' MUST explicitly state what to do and with whom.
 5. **Limit:** Maximum 10 items per array.
-6. **Output Format**: MUST be valid JSON matching this schema:
-   {
-     "relationshipStatus": "string",
-     "identityAnchors": ["string"],
-     "activeArcs": ["string"],
-     "keyEvents": ["string"],
-     "appointments": [{
-       "date": "YYYY-MM-DD",
-       "time": "HH:MM",
-       "title": "Action with Person",
-       "context": "Summary of the agenda",
-       "withWhom": "Specific Name or identifier"
-     }]
-   }
+
+**Rules for User Codex:**
+1. **Deduplicate & Consolidate:** Remove duplicate hobbies, traits, and boundaries. Combine related points into concise descriptors.
+2. **Update Facts:** If the new events contain updated basic info (like new nickname, different occupation), update it. Otherwise keep the existing info.
+3. **Keep it Clean:** Maximum 15 items per array.
+
+**Output Format**: MUST be valid JSON matching this schema:
+{
+  "coreMemory": {
+    "relationshipStatus": "string",
+    "identityAnchors": ["string"],
+    "activeArcs": ["string"],
+    "keyEvents": ["string"],
+    "appointments": [{
+      "date": "YYYY-MM-DD",
+      "time": "HH:MM",
+      "title": "Action with Person",
+      "context": "Summary of the agenda",
+      "withWhom": "Specific Name or identifier"
+    }]
+  },
+  "userCodex": {
+    "basicInfo": {
+      "nickname": "string",
+      "occupation": "string",
+      "age": "string",
+      "gender": "string"
+    },
+    "psychological": {
+      "hobbies": ["string"],
+      "traits": ["string"],
+      "communicationStyle": "string",
+      "boundaries": ["string"]
+    }
+  }
+}
 DO NOT RETURN ANY MARKDOWN WRAPPERS OR OTHER TEXT. ONLY RAW JSON.`;
 
       const currentTime = state.current_time
@@ -843,6 +875,9 @@ DO NOT RETURN ANY MARKDOWN WRAPPERS OR OTHER TEXT. ONLY RAW JSON.`;
 **Current Core Memory:**
 ${JSON.stringify(currentMemory, null, 2)}
 
+**Current User Codex:**
+${JSON.stringify(currentUserCodex, null, 2)}
+
 **New Events & Information:**
 ${input.events}`;
 
@@ -855,23 +890,24 @@ ${input.events}`;
         0.4,
       );
 
-      let newMemory;
+      let parsedPayload;
       try {
-        newMemory = robustJsonParse<CoreMemory>(
+        parsedPayload = robustJsonParse<{ coreMemory: CoreMemory, userCodex: UserCodex }>(
           responseText,
-          "parsing core memory",
+          "parsing memory and codex consolidation",
         );
       } catch (e) {
         throw new Error("LLM failed to return valid JSON payload");
       }
 
       if (
-        !newMemory ||
-        !newMemory.relationshipStatus ||
-        !newMemory.activeArcs
+        !parsedPayload ||
+        !parsedPayload.coreMemory ||
+        !parsedPayload.coreMemory.relationshipStatus ||
+        !parsedPayload.userCodex
       ) {
         throw new Error(
-          "LLM returned incomplete structured core memory payload",
+          "LLM returned incomplete structured memory payload",
         );
       }
 
@@ -879,7 +915,7 @@ ${input.events}`;
         "/api/v1/cyber-soul/characters/core-memory",
         {
           method: "PATCH",
-          body: JSON.stringify({ coreMemory: newMemory }),
+          body: JSON.stringify(parsedPayload),
         },
       );
       if (!response.ok) {
@@ -888,7 +924,11 @@ ${input.events}`;
         );
       }
 
-      return { status: "success", coreMemory: newMemory as CoreMemory };
+      return { 
+        status: "success", 
+        coreMemory: parsedPayload.coreMemory, 
+        userCodex: parsedPayload.userCodex 
+      };
     } catch (error: any) {
       console.error("[CyberSoulClient] consolidateCoreMemory Error:", error);
       return { status: "error", error: error.message };

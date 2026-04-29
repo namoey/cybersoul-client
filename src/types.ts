@@ -120,6 +120,22 @@ export interface CoreMemory {
   appointments: Appointment[];
 }
 
+export interface UserCodex {
+  basicInfo: {
+    nickname?: string;
+    occupation?: string;
+    age?: number | string;
+    gender?: string;
+  };
+  psychological: {
+    hobbies: string[];
+    traits: string[];
+    communicationStyle: string;
+    boundaries: string[];
+  };
+  familiarityScore?: number;
+}
+
 /**
  * Generic dynamic voice args returned by the LLM and forwarded to backend TTS.
  *
@@ -168,7 +184,7 @@ export interface CharacterState {
   personality_traits?: string;
   interaction_boundaries?: string;
   communication_style?: string;
-  user_codex?: any;
+  user_codex?: UserCodex;
 }
 
 export interface BaseLLMProvider {

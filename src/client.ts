@@ -629,7 +629,7 @@ ${
   isAuto
     ? `Analyze the user's message to determine the appropriate response modalities (text, image, voice).
   - Always include 'textResponse'.
-  - If an Active Event is currently taking place WITH the user, proactively include 'imageParams' for key scenic moments using a first-person perspective (e.g., 'boyfriend_view', 'front', looking right at them). Also include 'imageParams' if the user explicitly asks for a photo or describes a visual action.
+  - If an Active Event is currently taking place WITH the user, proactively include 'imageParams' for key scenic moments. Since active events are often highly dynamic actions, strongly consider using mode: "full-prompt" to describe the scene intimately from the user's first-person perspective (POV). Also include 'imageParams' if the user explicitly asks for a photo or describes a visual action.
   - Automatically include 'voiceArgs' if a particular mood or strong emotion needs to be expressed vividly, or if the user explicitly wants to hear you.
   - If the user proposes a new activity or hangout (e.g., "let's go to the cafe", "do you want to watch a movie?"), include 'triggerEvent' to schedule it.`
     : `Requested types to fulfill: ${types.join(", ")}`

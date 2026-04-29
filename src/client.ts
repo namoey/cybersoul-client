@@ -629,8 +629,8 @@ ${
   isAuto
     ? `Analyze the user's message to determine the appropriate response modalities (text, image, voice).
   - Always include 'textResponse'.
-  - If the user explicitly asks to see a photo, look at you, or describing an action that warrants a photo, include 'imageParams'.
-  - If the user wants to hear you, or if appropriate for a voice message, include 'voiceArgs'.
+  - If an Active Event is currently taking place WITH the user, proactively include 'imageParams' for key scenic moments using a first-person perspective (e.g., 'boyfriend_view', 'front', looking right at them). Also include 'imageParams' if the user explicitly asks for a photo or describes a visual action.
+  - Automatically include 'voiceArgs' if a particular mood or strong emotion needs to be expressed vividly, or if the user explicitly wants to hear you.
   - If the user proposes a new activity or hangout (e.g., "let's go to the cafe", "do you want to watch a movie?"), include 'triggerEvent' to schedule it.`
     : `Requested types to fulfill: ${types.join(", ")}`
 }

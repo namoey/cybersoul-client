@@ -194,6 +194,14 @@ ${scenarioContext}
   }`;
   }
 
+  private getEventSchemaParams(): string {
+    return `"eventTitle": "e.g. 'Coffee with the user' (Must include WHAT to do and WITH WHOM)",
+    "eventDescription": "e.g. 'Meeting at the cafe, chatting about life' (Detailed description of the event and virtual scene)",
+    "scheduledStartTimeStr": "HH:MM (Optional, 24-hour format if a specific time today is agreed upon, e.g., '14:30', otherwise null)",
+    "durationMins": 60,
+    "outfitId": "optional wardrobe ID to change into if appropriate"`;
+  }
+
   private getVoiceSchemaParams(): string {
     // Only reached when no dynamic_params are configured on the voice model.
     // Configure dynamic_params in DB to match the TTS provider; this fallback is provider-agnostic.
@@ -275,22 +283,7 @@ You MUST output ONLY a valid JSON object matching this exact structure:
 {
   "acceptEvent": true,
   "reason": "string (Why you accepted or declined, speaking in character)",
-  "eventTitle": "string (A short title detailing exactly WHAT to do and WITH WHOM, e.g. 'Coffee with 哥哥')",
-  "eventDescription": "string (Detailed description of the future event, virtual scene, and story with the participant)",
-  "requiresOutfitChange": false,
-  "selectedOutfitId": null,
-  "scheduledStartTimeStr": "HH:MM (Optional, 24-hour format if a specific time today is agreed upon, e.g., '14:30', otherwise null)"
-}
-
-Example Valid Answer:
-{
-  "acceptEvent": true,
-  "reason": "Sure, I'd love to go to the cafe at 2:30 PM. It sounds relaxing.",
-  "eventTitle": "Have Coffee with the user at the Starry Cafe",
-  "eventDescription": "Meeting at the Starry Cafe at 2:30 PM, chatting about life while sipping lattes facing the window.",
-  "requiresOutfitChange": false,
-  "selectedOutfitId": null,
-  "scheduledStartTimeStr": "14:30"
+  ${this.getEventSchemaParams()}
 }
 
 CRITICAL: Output MUST be ONLY valid JSON with no markdown block wrappers. Do NOT wrap the JSON in \`\`\`json or add conversational text.`;
@@ -321,10 +314,10 @@ CRITICAL: Output MUST be ONLY valid JSON with no markdown block wrappers. Do NOT
       // 4. API call if accepted
       if (decisionData.acceptEvent === true) {
         const payload = {
-          eventTitle: decisionData.eventTitle || decisionData.title || "On-demand Event",
+          eventTitle: decisionData.eventTitle || decisionData.title || params.eventDescription?.substring(0, 20) || "On-demand Event",
           eventDescription: decisionData.eventDescription || params.eventDescription,
-          durationMins: params.durationMins || 60,
-          outfitId: decisionData.requiresOutfitChange ? decisionData.selectedOutfitId : undefined,
+          durationMins: decisionData.durationMins || params.durationMins || 60,
+          outfitId: decisionData.outfitId || undefined,
           scheduledStartTimeStr: decisionData.scheduledStartTimeStr || decisionData.startTime || undefined,
         };
 
@@ -342,9 +335,9 @@ CRITICAL: Output MUST be ONLY valid JSON with no markdown block wrappers. Do NOT
         status: "success",
         acceptEvent: decisionData.acceptEvent,
         reason: decisionData.reason,
-        requiresOutfitChange: decisionData.requiresOutfitChange,
-        selectedOutfitId: decisionData.selectedOutfitId,
-        scheduledStartTimeStr: decisionData.scheduledStartTimeStr || undefined,
+        requiresOutfitChange: !!decisionData.outfitId,
+        selectedOutfitId: decisionData.outfitId || null,
+        scheduledStartTimeStr: decisionData.scheduledStartTimeStr || decisionData.startTime || undefined,
       };
     } catch (error: any) {
       console.error("[CyberSoulClient] ondemandEvent Error: ", error);
@@ -644,7 +637,9 @@ Output JSON Schema:
   "textResponse": "The direct spoken dialogue in Chinese",
   "stateUpdate": { "temperatureDelta": 1, "userNickname": "What you now call the user", "agentNickname": "What the user calls you", "talkingStyle": "Current mood/style of talking" },
   "userAnalysis": { "newFactsLearned": [{ "category": "occupation", "value": "Software Engineer" }] },
-  "triggerEvent": { "eventTitle": "Have Coffee with the user at the Starry Cafe (Must include WHAT to do and WITH WHOM)", "eventDescription": "Meeting at the Starry Cafe at 2:30 PM, chatting about life while sipping lattes facing the window.", "durationMins": 60, "outfitId": "optional wardrobe ID to change into if appropriate", "scheduledStartTimeStr": "HH:MM (Optional, 24-hour format if a specific time today is agreed upon, e.g., '14:30', otherwise null)" },
+  "triggerEvent": {
+    ${this.getEventSchemaParams()}
+  },
   ${this.getImageSchemaParams()},
   ${this.getVoiceSchemaFromState(state)}
 }
@@ -711,11 +706,11 @@ Note: If "imageParams", "voiceArgs", "triggerEvent", or "userAnalysis" are not n
           this.apiFetch("/api/v1/cyber-soul/characters/ondemand-event", {
             method: "POST",
             body: JSON.stringify({
-              eventTitle: parsedIntent.triggerEvent.eventTitle || "Event",
+              eventTitle: parsedIntent.triggerEvent.eventTitle || (parsedIntent.triggerEvent as any).title || (parsedIntent.triggerEvent.eventDescription || "Event").substring(0, 20),
               eventDescription: parsedIntent.triggerEvent.eventDescription || (parsedIntent.triggerEvent as any).description || "Event",
               durationMins: parsedIntent.triggerEvent.durationMins || 60,
               outfitId: parsedIntent.triggerEvent.outfitId || undefined,
-              scheduledStartTimeStr: parsedIntent.triggerEvent.scheduledStartTimeStr || undefined,
+              scheduledStartTimeStr: parsedIntent.triggerEvent.scheduledStartTimeStr || (parsedIntent.triggerEvent as any).startTime || undefined,
             }),
           }).catch(e => console.error("[CyberSoulClient] Auto-triggered ondemandEvent failed:", e))
         );

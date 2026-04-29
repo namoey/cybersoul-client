@@ -181,7 +181,7 @@ ${scenarioContext}
   private getImageSchemaParams(): string {
     return `"imageParams": {
     "mode": "structured | full-prompt (use 'full-prompt' for highly dynamic actions)",
-    "full_prompt": "Use only if mode is full-prompt. Highly detailed visual description in ENGLISH. MUST align with the character's current Active Wardrobe unless the context/exposure explicitly demands otherwise (e.g., naked for intimate scenes).",
+    "full_prompt": "Use only if mode is full-prompt. Highly detailed visual description in ENGLISH. CRITICAL: MUST use a strict first-person perspective exclusively from the USER's eyes. DO NOT describe the user (e.g., 'a man', 'the driver') as visible in the scene because the camera IS the user. Start with 'POV: '. Describe ONLY the character looking back at the camera and their immediate surroundings. MUST align with the character's current Active Wardrobe unless the context/exposure explicitly demands otherwise.",
     "expression": "seductive | cute | happy | sleepy | dazed | pleased | default (Strictly choose ONE from this exact list. DO NOT invent new words like 'shy'.)",
     "condition": "normal | sweaty | wet | messy | oily (Strictly choose ONE from this exact list.)",
     "view_angle": "front | side | high_angle | from_below | boyfriend_view | selfie | mirror (Strictly choose ONE from this exact list.)",
@@ -623,7 +623,7 @@ ${
   isAuto
     ? `Analyze the user's message to determine the appropriate response modalities (text, image, voice).
   - Always include 'textResponse'.
-  - If an Active Event is currently taking place WITH the user, proactively include 'imageParams' for key scenic moments. Since active events are often highly dynamic actions, strongly consider using mode: "full-prompt" to describe the scene intimately from the user's first-person perspective (POV). Also include 'imageParams' if the user explicitly asks for a photo or describes a visual action.
+  - If an Active Event is currently taking place WITH the user, proactively include 'imageParams' for key scenic moments. Since active events are often highly dynamic actions, strongly consider using mode: "full-prompt" to capture the scene intimately. Also include 'imageParams' if the user explicitly asks for a photo or describes a visual action.
   - Automatically include 'voiceArgs' if a particular mood or strong emotion needs to be expressed vividly, or if the user explicitly wants to hear you.
   - If the user proposes a new activity or hangout (e.g., "let's go to the cafe", "do you want to watch a movie?"), include 'triggerEvent' to schedule it.`
     : `Requested types to fulfill: ${types.join(", ")}`
@@ -635,8 +635,8 @@ Voice direction for voiceArgs: ${this.getVoiceDirectorInstruction(state)}
 
 Output JSON Schema:
 {
-  "textResponse": "The direct spoken dialogue in Chinese (can include action/scene descriptions in parentheses, e.g. '（低头看向你）')",
-  "spokenText": "The clean spoken dialogue ONLY, strictly without any actions, parentheses, or scene descriptions - just the spoken words for TTS voice generation",
+  "textResponse": "The clean spoken dialogue ONLY, strictly without any actions, parentheses, or scene descriptions. If nothing to speak, output an empty string.",
+  "actionText": "Any non-verbal actions, inner thoughts, or scene descriptions in parentheses (e.g. '（低头看向你）'). Output empty string if none.",
   "stateUpdate": { "temperatureDelta": 1, "userNickname": "What you now call the user", "agentNickname": "What the user calls you", "talkingStyle": "Current mood/style of talking" },
   "userAnalysis": { "newFactsLearned": [{ "category": "occupation", "value": "Software Engineer" }] },
   "triggerEvent": {
@@ -746,9 +746,7 @@ Note: If "imageParams", "voiceArgs", "triggerEvent", or "userAnalysis" are not n
             ? (parsedIntent.voiceArgs as VoiceArgs)
             : {};
 
-        let textForVoice = typeof parsedIntent.spokenText === "string" && parsedIntent.spokenText.trim().length > 0
-          ? parsedIntent.spokenText
-          : resolvedTextResponse;
+        let textForVoice = resolvedTextResponse;
 
         if (typeof textForVoice !== "string" || textForVoice.trim().length === 0) {
           textForVoice = "...";
@@ -770,7 +768,8 @@ Note: If "imageParams", "voiceArgs", "triggerEvent", or "userAnalysis" are not n
 
       return {
         status: "success",
-          textResponse: resolvedTextResponse || "...",
+        textResponse: resolvedTextResponse || "...",
+        actionText: parsedIntent.actionText || "",
         imageUrl: finalImageUrl,
         audioUrl: finalAudioUrl,
         durationSec: finalDurationSec,

@@ -5,8 +5,8 @@ export function robustJsonParse<T>(jsonString: string, contextMessage: string = 
   cleanJson = cleanJson.replace(/[“”]/g, '"');
 
   // 0.1 Inject missing colons between string keys and string values (e.g. "key""value" -> "key":"value")
-  // Only insert the colon if there spans whitespace between two quotes.
-  cleanJson = cleanJson.replace(/"\s*"/g, '":"');
+  // Only insert the colon if we match a likely key (alphanumeric/hyphen) followed by quotes.
+  cleanJson = cleanJson.replace(/("[\w-]+")\s*(")/g, '$1:$2');
 
   // 1. Strip Markdown code blocks (tolerates missing closing backticks)
   const jsonMatch = cleanJson.match(/```(?:json)?\n?([\s\S]*?)(?:```|$)/i);

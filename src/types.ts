@@ -1,5 +1,5 @@
 export interface LLMConfig {
-  provider: 'minimax';
+  provider: "minimax";
   apiKey: string;
   model: string;
 }
@@ -13,10 +13,10 @@ export interface CyberSoulClientConfig {
 }
 
 export enum InteractRequestType {
-  AUTO = 'auto',
-  TEXT = 'text',
-  IMAGE = 'image',
-  VOICE = 'voice',
+  AUTO = "auto",
+  TEXT = "text",
+  IMAGE = "image",
+  VOICE = "voice",
 }
 
 export interface InteractParams {
@@ -34,7 +34,7 @@ export interface OndemandEventParams {
 }
 
 export interface OndemandEventResponse {
-  status: 'success' | 'error';
+  status: "success" | "error";
   acceptEvent?: boolean;
   reason?: string;
   requiresOutfitChange?: boolean;
@@ -51,8 +51,9 @@ export interface WardrobeItem {
 }
 
 export interface InteractResponse {
-  status: 'success' | 'error';
+  status: "success" | "error";
   textResponse: string;
+  actionText?: string;
   imageUrl?: string;
   audioUrl?: string;
   durationSec?: number;
@@ -62,17 +63,27 @@ export interface InteractResponse {
     durationMins?: number;
     outfitId?: string | null;
   };
-  stateUpdate?: DispatcherIntent['stateUpdate'];  userAnalysis?: DispatcherIntent['userAnalysis'];  error?: string;
+  stateUpdate?: DispatcherIntent["stateUpdate"];
+  userAnalysis?: DispatcherIntent["userAnalysis"];
+  error?: string;
 }
 
 export interface DispatcherIntent {
   textResponse?: string;
-  spokenText?: string;
+  actionText?: string;
   imageParams?: any;
   voiceArgs?: VoiceArgs | null;
   userAnalysis?: {
     newFactsLearned: {
-      category: "nickname" | "occupation" | "age" | "gender" | "hobby" | "trait" | "communicationStyle" | "boundary";
+      category:
+        | "nickname"
+        | "occupation"
+        | "age"
+        | "gender"
+        | "hobby"
+        | "trait"
+        | "communicationStyle"
+        | "boundary";
       value: string;
     }[];
   };
@@ -151,10 +162,20 @@ export interface CharacterState {
 }
 
 export interface BaseLLMProvider {
-  generate(messages: { role: string; content: string }[], maxTokens?: number, temperature?: number): Promise<string>;
+  generate(
+    messages: { role: string; content: string }[],
+    maxTokens?: number,
+    temperature?: number,
+  ): Promise<string>;
 }
 
-export type ModelCustomConfigValueType = 'string' | 'stringArray' | 'number' | 'integer' | 'boolean' | 'enum';
+export type ModelCustomConfigValueType =
+  | "string"
+  | "stringArray"
+  | "number"
+  | "integer"
+  | "boolean"
+  | "enum";
 
 export interface IModelCustomConfigField {
   key: string;

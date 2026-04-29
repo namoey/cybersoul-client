@@ -196,9 +196,10 @@ ${scenarioContext}
 
   private getEventSchemaParams(userName?: string): string {
     const name = userName || "the user";
-    return `"eventTitle": "CRITICAL: Must include BOTH ‘WHAT to do’ AND ‘WITH WHOM’ (use their specific name if known, e.g., 'Having coffee with ${name}'). If you don't explicitly include WITH WHOM the event is by name, it is a hard failure.",
+    return `"eventTitle": "CRITICAL: Must include BOTH ‘WHAT to do’ AND ‘WITH WHOM’ (use the user's specific name if known, e.g., 'Having coffee with ${name}'). DO NOT use your own character name in the title! If you don't explicitly include WITH WHOM the event is by name, it is a hard failure.",
     "eventDescription": "e.g. 'Meeting at the cafe, chatting about life' (Detailed description of the event and virtual scene)",
-    "scheduledStartTimeStr": "HH:MM (Optional, 24-hour format if a specific time today is agreed upon, e.g., '14:30', otherwise null)",
+    "scheduledDateStr": "YYYY-MM-DD (Optional. If the user specifies a future date like 'tomorrow', 'Saturday', or 'next week', calculate the exact calendar date based on the 'Current time' provided in the context and output it here. Otherwise, return null)",
+    "scheduledStartTimeStr": "HH:MM (Optional, 24-hour format if a specific time is agreed upon, e.g., '14:30', otherwise null)",
     "durationMins": 60,
     "outfitId": "optional wardrobe ID to change into if appropriate"`;
   }
@@ -320,6 +321,7 @@ CRITICAL: Output MUST be ONLY valid JSON with no markdown block wrappers. Do NOT
           durationMins: decisionData.durationMins || params.durationMins || 60,
           outfitId: decisionData.outfitId || undefined,
           scheduledStartTimeStr: decisionData.scheduledStartTimeStr || undefined,
+          scheduledDateStr: decisionData.scheduledDateStr || undefined,
         };
 
         const backendRes = await this.apiFetch("/api/v1/cyber-soul/characters/ondemand-event", {
@@ -339,6 +341,7 @@ CRITICAL: Output MUST be ONLY valid JSON with no markdown block wrappers. Do NOT
         requiresOutfitChange: !!decisionData.outfitId,
         selectedOutfitId: decisionData.outfitId || null,
         scheduledStartTimeStr: decisionData.scheduledStartTimeStr || decisionData.startTime || undefined,
+        scheduledDateStr: decisionData.scheduledDateStr || undefined,
       };
     } catch (error: any) {
       console.error("[CyberSoulClient] ondemandEvent Error: ", error);
@@ -625,7 +628,7 @@ ${
   - Always include 'textResponse'.
   - If an Active Event is currently taking place WITH the user, proactively include 'imageParams' for key scenic moments. Since active events are often highly dynamic actions, strongly consider using mode: "full-prompt" to capture the scene intimately. Also include 'imageParams' if the user explicitly asks for a photo or describes a visual action.
   - Automatically include 'voiceArgs' if a particular mood or strong emotion needs to be expressed vividly, or if the user explicitly wants to hear you.
-  - If the user proposes a new activity or hangout (e.g., "let's go to the cafe", "do you want to watch a movie?"), include 'triggerEvent' to schedule it.`
+  - If the user explicitly proposes a new activity or hangout IN THEIR VERY LAST MESSAGE (e.g., "let's go to the cafe", "do you want to watch a movie?"), include 'triggerEvent' to schedule it. DO NOT trigger events based on older plans or questions found in the chat history.`
     : `Requested types to fulfill: ${types.join(", ")}`
 }
 Every turn of positive or engaging interaction should slightly increase trust (+1). If the interaction is negative, -1. If strictly neutral, 0. You MUST ALWAYS include a 'stateUpdate' block with a 'temperatureDelta', updating nicknames or talkingStyle if needed. Temperature goes from 0 (cold/angry) to 100 (obsessively in love). For 'temperatureDelta', output an integer (e.g. 1, -2, 0).
@@ -713,6 +716,7 @@ Note: If "imageParams", "voiceArgs", "triggerEvent", or "userAnalysis" are not n
               durationMins: parsedIntent.triggerEvent.durationMins || 60,
               outfitId: parsedIntent.triggerEvent.outfitId || undefined,
               scheduledStartTimeStr: parsedIntent.triggerEvent.scheduledStartTimeStr || undefined,
+              scheduledDateStr: parsedIntent.triggerEvent.scheduledDateStr || undefined,
             }),
           }).catch(e => console.error("[CyberSoulClient] Auto-triggered ondemandEvent failed:", e))
         );
@@ -809,15 +813,22 @@ Your task is to merge the 'Current Core Memory' with 'New Daily Events & Informa
 **Rules:**
 1. **Condense:** Keep items brief. Remove resolving or expired story arcs.
 2. **Retain Value:** Never delete the absolute core identity or major relationship milestones.
-3. **Time-Aware:** Update or remove 'appointments' if the new events mention they occurred. If an event or appointment is time-specific, append the day/time to its description.
-4. **Limit:** Maximum 10 items per array.
-5. **Output Format**: MUST be valid JSON matching this schema:
+3. **Time-Aware Garbage Collection:** Compare the Current Time to appointments. You MUST remove any appointments that are in the past. If the completed appointment was heavily significant, summarize it into 'keyEvents'.
+4. **Appointment Structure:** the 'title' and 'context' MUST explicitly state what to do and with whom.
+5. **Limit:** Maximum 10 items per array.
+6. **Output Format**: MUST be valid JSON matching this schema:
    {
      "relationshipStatus": "string",
      "identityAnchors": ["string"],
      "activeArcs": ["string"],
      "keyEvents": ["string"],
-     "appointments": ["string"]
+     "appointments": [{
+       "date": "YYYY-MM-DD",
+       "time": "HH:MM",
+       "title": "Action with Person",
+       "context": "Summary of the agenda",
+       "withWhom": "Specific Name or identifier"
+     }]
    }
 DO NOT RETURN ANY MARKDOWN WRAPPERS OR OTHER TEXT. ONLY RAW JSON.`;
 

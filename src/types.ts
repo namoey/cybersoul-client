@@ -40,6 +40,7 @@ export interface OndemandEventResponse {
   requiresOutfitChange?: boolean;
   selectedOutfitId?: string;
   scheduledStartTimeStr?: string;
+  scheduledDateStr?: string;
   error?: string;
 }
 
@@ -99,7 +100,16 @@ export interface DispatcherIntent {
     durationMins?: number;
     outfitId?: string | null;
     scheduledStartTimeStr?: string | null;
+    scheduledDateStr?: string | null;
   } | null;
+}
+
+export interface Appointment {
+  date: string;
+  time: string;
+  title: string;
+  context: string;
+  withWhom: string;
 }
 
 export interface CoreMemory {
@@ -107,7 +117,7 @@ export interface CoreMemory {
   identityAnchors: string[];
   activeArcs: string[];
   keyEvents: string[];
-  appointments: string[];
+  appointments: Appointment[];
 }
 
 /**

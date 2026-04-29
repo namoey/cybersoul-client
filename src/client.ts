@@ -194,8 +194,9 @@ ${scenarioContext}
   }`;
   }
 
-  private getEventSchemaParams(): string {
-    return `"eventTitle": "e.g. 'Coffee with the user' (Must include WHAT to do and WITH WHOM)",
+  private getEventSchemaParams(userName?: string): string {
+    const name = userName || "the user";
+    return `"eventTitle": "CRITICAL: Must include BOTH ‘WHAT to do’ AND ‘WITH WHOM’ (use their specific name if known, e.g., 'Having coffee with ${name}'). If you don't explicitly include WITH WHOM the event is by name, it is a hard failure.",
     "eventDescription": "e.g. 'Meeting at the cafe, chatting about life' (Detailed description of the event and virtual scene)",
     "scheduledStartTimeStr": "HH:MM (Optional, 24-hour format if a specific time today is agreed upon, e.g., '14:30', otherwise null)",
     "durationMins": 60,
@@ -283,7 +284,7 @@ You MUST output ONLY a valid JSON object matching this exact structure:
 {
   "acceptEvent": true,
   "reason": "string (Why you accepted or declined, speaking in character)",
-  ${this.getEventSchemaParams()}
+  ${this.getEventSchemaParams(state.dynamic_context?.userNickname)}
 }
 
 CRITICAL: Output MUST be ONLY valid JSON with no markdown block wrappers. Do NOT wrap the JSON in \`\`\`json or add conversational text.`;
@@ -638,7 +639,7 @@ Output JSON Schema:
   "stateUpdate": { "temperatureDelta": 1, "userNickname": "What you now call the user", "agentNickname": "What the user calls you", "talkingStyle": "Current mood/style of talking" },
   "userAnalysis": { "newFactsLearned": [{ "category": "occupation", "value": "Software Engineer" }] },
   "triggerEvent": {
-    ${this.getEventSchemaParams()}
+    ${this.getEventSchemaParams(state.dynamic_context?.userNickname)}
   },
   ${this.getImageSchemaParams()},
   ${this.getVoiceSchemaFromState(state)}

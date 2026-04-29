@@ -1,6 +1,13 @@
 export function robustJsonParse<T>(jsonString: string, contextMessage: string = 'throwing original error'): T {
   let cleanJson = jsonString.trim();
   
+  // 0. Replace smart quotes with standard ASCII double quotes
+  cleanJson = cleanJson.replace(/[“”]/g, '"');
+
+  // 0.1 Inject missing colons between string keys and string values (e.g. "key""value" -> "key":"value")
+  // Only insert the colon if there spans whitespace between two quotes.
+  cleanJson = cleanJson.replace(/"\s*"/g, '":"');
+
   // 1. Strip Markdown code blocks (tolerates missing closing backticks)
   const jsonMatch = cleanJson.match(/```(?:json)?\n?([\s\S]*?)(?:```|$)/i);
   if (jsonMatch && jsonMatch[1].trim().startsWith('{')) {

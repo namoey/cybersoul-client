@@ -322,7 +322,7 @@ CRITICAL: Output MUST be ONLY valid JSON with no markdown block wrappers. Do NOT
       // 4. API call if accepted
       if (decisionData.acceptEvent === true) {
         const payload = {
-          eventTitle: decisionData.eventTitle || "On-demand Event",
+          eventTitle: decisionData.eventTitle || "Event",
           eventDescription: decisionData.eventDescription || params.eventDescription,
           durationMins: params.durationMins || 60,
           outfitId: decisionData.requiresOutfitChange ? decisionData.selectedOutfitId : undefined,
@@ -712,7 +712,7 @@ Note: If "imageParams", "voiceArgs", "triggerEvent", or "userAnalysis" are not n
           this.apiFetch("/api/v1/cyber-soul/characters/ondemand-event", {
             method: "POST",
             body: JSON.stringify({
-              eventTitle: parsedIntent.triggerEvent.eventTitle || "On-demand Event",
+              eventTitle: parsedIntent.triggerEvent.eventTitle || "Event",
               eventDescription: parsedIntent.triggerEvent.eventDescription || (parsedIntent.triggerEvent as any).description || "Event",
               durationMins: parsedIntent.triggerEvent.durationMins || 60,
               outfitId: parsedIntent.triggerEvent.outfitId || undefined,

@@ -17,7 +17,7 @@
   "scripts": {
     "build": "tsc",
     "prepare": "npm run build",
-    "test": "node -e \"console.log('No tests defined yet')\""
+    "test": "npm run build && node dist/utils/json.utils.test.js"
   },
   "keywords": [
     "cybersoul",

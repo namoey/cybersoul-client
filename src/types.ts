@@ -67,6 +67,7 @@ export interface InteractResponse {
 
 export interface DispatcherIntent {
   textResponse?: string;
+  spokenText?: string;
   imageParams?: any;
   voiceArgs?: VoiceArgs | null;
   userAnalysis?: {

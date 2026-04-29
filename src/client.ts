@@ -297,7 +297,7 @@ CRITICAL: Output MUST be ONLY valid JSON with no markdown block wrappers. Do NOT
         })),
         {
           role: "user",
-          content: `${params.interactParams?.userMessage || `Event Proposal: ${params.eventDescription}`}\n\n**CRITICAL REMINDER**: You MUST output your final response exactly in the JSON format specified in the system prompt. DO NOT output plain text directly.`,
+          content: `${params.interactParams?.userMessage || `Event Proposal: ${params.eventDescription}`}\n\n**CRITICAL REMINDER**: You MUST output your final response exactly in the JSON format specified in the system prompt. DO NOT output plain text directly. CRITICAL: You must properly escape all newlines inside string values using \\n. Never use raw, unescaped line breaks inside the JSON strings.`,
         },
       ];
 
@@ -388,7 +388,7 @@ Output strictly valid JSON ONLY. No markdown, no conversational filler. Return e
       ...(params.interactParams?.history || []),
       {
         role: "user",
-        content: `Scene Description: "${params.sceneDescription}"\n\n**CRITICAL REMINDER**: You MUST output your final response exactly in the JSON format specified in the system prompt. DO NOT output plain text dialogue directly. For 'imageParams', ALL values MUST be in ENGLISH ONLY without exception, and you MUST use the exact English enum strings provided.`,
+        content: `Scene Description: "${params.sceneDescription}"\n\n**CRITICAL REMINDER**: You MUST output your final response exactly in the JSON format specified in the system prompt. DO NOT output plain text dialogue directly. CRITICAL: You must properly escape all newlines inside string values using \\n. Never use raw, unescaped line breaks inside the JSON strings. For 'imageParams', ALL values MUST be in ENGLISH ONLY without exception, and you MUST use the exact English enum strings provided.`,
       },
     ];
 
@@ -431,7 +431,7 @@ Output strictly valid JSON ONLY. No markdown, no conversational filler. Return e
       ...(params.interactParams?.history || []),
       {
         role: "user",
-        content: `Text: "${params.text}"\n\n**CRITICAL REMINDER**: You MUST output your final response exactly in the JSON format specified in the system prompt. DO NOT output plain text dialogue directly.`,
+        content: `Text: "${params.text}"\n\n**CRITICAL REMINDER**: You MUST output your final response exactly in the JSON format specified in the system prompt. DO NOT output plain text dialogue directly. CRITICAL: You must properly escape all newlines inside string values using \\n. Never use raw, unescaped line breaks inside the JSON strings.`,
       },
     ];
 
@@ -635,7 +635,8 @@ Voice direction for voiceArgs: ${this.getVoiceDirectorInstruction(state)}
 
 Output JSON Schema:
 {
-  "textResponse": "The direct spoken dialogue in Chinese",
+  "textResponse": "The direct spoken dialogue in Chinese (can include action/scene descriptions in parentheses, e.g. '（低头看向你）')",
+  "spokenText": "The clean spoken dialogue ONLY, strictly without any actions, parentheses, or scene descriptions - just the spoken words for TTS voice generation",
   "stateUpdate": { "temperatureDelta": 1, "userNickname": "What you now call the user", "agentNickname": "What the user calls you", "talkingStyle": "Current mood/style of talking" },
   "userAnalysis": { "newFactsLearned": [{ "category": "occupation", "value": "Software Engineer" }] },
   "triggerEvent": {
@@ -653,7 +654,7 @@ Note: If "imageParams", "voiceArgs", "triggerEvent", or "userAnalysis" are not n
           role: "user",
           content:
             params.userMessage +
-            "\n\n**CRITICAL REMINDER**: You MUST output your final response exactly in the JSON format specified in the system prompt. DO NOT output plain text dialogue directly. For 'imageParams', ALL values MUST be in ENGLISH ONLY without exception, and you MUST use the exact English enum strings provided.",
+            "\n\n**CRITICAL REMINDER**: You MUST output your final response exactly in the JSON format specified in the system prompt. DO NOT output plain text dialogue directly. CRITICAL: You must properly escape all newlines inside string values using \\n. Never use raw, unescaped line breaks inside the JSON strings. For 'imageParams', ALL values MUST be in ENGLISH ONLY without exception, and you MUST use the exact English enum strings provided.",
         },
       ];
 
@@ -745,15 +746,17 @@ Note: If "imageParams", "voiceArgs", "triggerEvent", or "userAnalysis" are not n
             ? (parsedIntent.voiceArgs as VoiceArgs)
             : {};
 
-          const textForVoice =
-            typeof resolvedTextResponse === "string" &&
-            resolvedTextResponse.trim().length > 0
-              ? resolvedTextResponse
-              : "...";
+        let textForVoice = typeof parsedIntent.spokenText === "string" && parsedIntent.spokenText.trim().length > 0
+          ? parsedIntent.spokenText
+          : resolvedTextResponse;
+
+        if (typeof textForVoice !== "string" || textForVoice.trim().length === 0) {
+          textForVoice = "...";
+        }
 
         mediaTasks.push(
           this.generatePrimitive("voice", {
-              text: textForVoice,
+            text: textForVoice,
             dynamicArgs: normalizedVoiceArgs,
           }).then((res: any) => {
             finalAudioUrl = res.audio_url;

@@ -276,16 +276,22 @@ You MUST output ONLY a valid JSON object matching this exact structure:
 {
   "acceptEvent": true,
   "reason": "string (Why you accepted or declined, speaking in character)",
+  "eventTitle": "string (A short title for the event, e.g. 'Coffee with 哥哥')",
+  "eventDescription": "string (Detailed description of the future event, virtual scene, and story with the participant)",
   "requiresOutfitChange": false,
-  "selectedOutfitId": null
+  "selectedOutfitId": null,
+  "scheduledStartTimeStr": "HH:MM (Optional, 24-hour format if a specific time today is agreed upon, e.g., '14:30', otherwise null)"
 }
 
 Example Valid Answer:
 {
   "acceptEvent": true,
-  "reason": "Sure, I'd love to go to the cafe. It sounds relaxing.",
+  "reason": "Sure, I'd love to go to the cafe at 2:30 PM. It sounds relaxing.",
+  "eventTitle": "Coffee at the Starry Cafe",
+  "eventDescription": "Meeting at the Starry Cafe at 2:30 PM, chatting about life while sipping lattes facing the window.",
   "requiresOutfitChange": false,
-  "selectedOutfitId": null
+  "selectedOutfitId": null,
+  "scheduledStartTimeStr": "14:30"
 }
 
 CRITICAL: Output MUST be ONLY valid JSON with no markdown block wrappers. Do NOT wrap the JSON in \`\`\`json or add conversational text.`;
@@ -316,9 +322,11 @@ CRITICAL: Output MUST be ONLY valid JSON with no markdown block wrappers. Do NOT
       // 4. API call if accepted
       if (decisionData.acceptEvent === true) {
         const payload = {
-          eventDescription: params.eventDescription,
+          eventTitle: decisionData.eventTitle || "On-demand Event",
+          eventDescription: decisionData.eventDescription || params.eventDescription,
           durationMins: params.durationMins || 60,
           outfitId: decisionData.requiresOutfitChange ? decisionData.selectedOutfitId : undefined,
+          scheduledStartTimeStr: decisionData.scheduledStartTimeStr || undefined,
         };
 
         const backendRes = await this.apiFetch("/api/v1/cyber-soul/characters/ondemand-event", {
@@ -337,6 +345,7 @@ CRITICAL: Output MUST be ONLY valid JSON with no markdown block wrappers. Do NOT
         reason: decisionData.reason,
         requiresOutfitChange: decisionData.requiresOutfitChange,
         selectedOutfitId: decisionData.selectedOutfitId,
+        scheduledStartTimeStr: decisionData.scheduledStartTimeStr || undefined,
       };
     } catch (error: any) {
       console.error("[CyberSoulClient] ondemandEvent Error: ", error);
@@ -636,7 +645,7 @@ Output JSON Schema:
   "textResponse": "The direct spoken dialogue in Chinese",
   "stateUpdate": { "temperatureDelta": 1, "userNickname": "What you now call the user", "agentNickname": "What the user calls you", "talkingStyle": "Current mood/style of talking" },
   "userAnalysis": { "newFactsLearned": [{ "category": "occupation", "value": "Software Engineer" }] },
-  "triggerEvent": { "eventDescription": "Going to a cafe", "durationMins": 60, "outfitId": "optional wardrobe ID to change into if appropriate" },
+  "triggerEvent": { "eventTitle": "Coffee at the Starry Cafe", "eventDescription": "Meeting at the Starry Cafe at 2:30 PM, chatting about life while sipping lattes facing the window.", "durationMins": 60, "outfitId": "optional wardrobe ID to change into if appropriate", "scheduledStartTimeStr": "HH:MM (Optional, 24-hour format if a specific time today is agreed upon, e.g., '14:30', otherwise null)" },
   ${this.getImageSchemaParams()},
   ${this.getVoiceSchemaFromState(state)}
 }
@@ -703,9 +712,11 @@ Note: If "imageParams", "voiceArgs", "triggerEvent", or "userAnalysis" are not n
           this.apiFetch("/api/v1/cyber-soul/characters/ondemand-event", {
             method: "POST",
             body: JSON.stringify({
-              eventDescription: parsedIntent.triggerEvent.eventDescription,
+              eventTitle: parsedIntent.triggerEvent.eventTitle || "On-demand Event",
+              eventDescription: parsedIntent.triggerEvent.eventDescription || (parsedIntent.triggerEvent as any).description || "Event",
               durationMins: parsedIntent.triggerEvent.durationMins || 60,
               outfitId: parsedIntent.triggerEvent.outfitId || undefined,
+              scheduledStartTimeStr: parsedIntent.triggerEvent.scheduledStartTimeStr || undefined,
             }),
           }).catch(e => console.error("[CyberSoulClient] Auto-triggered ondemandEvent failed:", e))
         );

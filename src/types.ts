@@ -39,6 +39,7 @@ export interface OndemandEventResponse {
   reason?: string;
   requiresOutfitChange?: boolean;
   selectedOutfitId?: string;
+  scheduledStartTimeStr?: string;
   error?: string;
 }
 
@@ -56,6 +57,7 @@ export interface InteractResponse {
   audioUrl?: string;
   durationSec?: number;
   triggeredEvent?: {
+    eventTitle?: string;
     eventDescription: string;
     durationMins?: number;
     outfitId?: string | null;
@@ -80,9 +82,11 @@ export interface DispatcherIntent {
     talkingStyle?: string;
   };
   triggerEvent?: {
+    eventTitle?: string;
     eventDescription: string;
     durationMins?: number;
     outfitId?: string | null;
+    scheduledStartTimeStr?: string | null;
   } | null;
 }
 

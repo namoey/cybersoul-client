@@ -321,11 +321,11 @@ CRITICAL: Output MUST be ONLY valid JSON with no markdown block wrappers. Do NOT
       // 4. API call if accepted
       if (decisionData.acceptEvent === true) {
         const payload = {
-          eventTitle: decisionData.eventTitle || "On-demand Event",
+          eventTitle: decisionData.eventTitle || decisionData.title || "On-demand Event",
           eventDescription: decisionData.eventDescription || params.eventDescription,
           durationMins: params.durationMins || 60,
           outfitId: decisionData.requiresOutfitChange ? decisionData.selectedOutfitId : undefined,
-          scheduledStartTimeStr: decisionData.scheduledStartTimeStr || undefined,
+          scheduledStartTimeStr: decisionData.scheduledStartTimeStr || decisionData.startTime || undefined,
         };
 
         const backendRes = await this.apiFetch("/api/v1/cyber-soul/characters/ondemand-event", {

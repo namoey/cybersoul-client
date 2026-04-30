@@ -19,11 +19,18 @@ export enum InteractRequestType {
   VOICE = "voice",
 }
 
+export interface HistoryEntry {
+  role: string;
+  content: string;
+  actionText?: string;
+  mediaHint?: string;
+}
+
 export interface InteractParams {
   userMessage: string;
   localContext?: string;
   requestTypes?: InteractRequestType[];
-  history?: { role: string; content: string }[];
+  history?: HistoryEntry[];
   onTextReady?: (textResponse: string) => void;
 }
 

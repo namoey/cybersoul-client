@@ -13,6 +13,7 @@ import {
   VoiceArgs,
   VoiceModelState,
   WardrobeItem,
+  HistoryEntry,
 } from "./types.js";
 import { robustJsonParse } from "./utils/json.utils.js";
 import { MinimaxProvider } from "./providers/minimax.provider.js";
@@ -276,15 +277,17 @@ ${scenarioContext}
     return payload as VoiceArgs;
   }
 
-  private buildHistoryTranscript(history: any[] | undefined, state: CharacterState): string {
+  private buildHistoryTranscript(history: HistoryEntry[] | undefined, state: CharacterState): string {
     if (!history || history.length === 0) return "";
     const agentName = state.dynamic_context?.agentNickname || state.name || "Agent";
     const userName = state.dynamic_context?.userNickname || "User";
     
-    const mapped = history.map((msg: any) => {
+    const mapped = history.map((msg: HistoryEntry) => {
       const speaker = msg.role === 'user' ? userName : (msg.role === 'assistant' || msg.role === 'agent' ? agentName : msg.role);
       const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
-      return `${speaker}: ${content}`;
+      const action = msg.actionText ? ` (${msg.actionText})` : "";
+      const media = msg.mediaHint ? ` [${msg.mediaHint}]` : "";
+      return `${speaker}:${action} ${content}${media}`;
     });
     return `[CHAT HISTORY]\n${mapped.join('\n')}\n\n`;
   }

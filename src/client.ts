@@ -671,7 +671,7 @@ Voice direction for voiceArgs: ${this.getVoiceDirectorInstruction(state)}
 
 Output JSON Schema:
 {
-  "textResponse": "The clean spoken dialogue ONLY, strictly without any actions, parentheses, or scene descriptions. If nothing to speak, output an empty string.",
+  "textResponse": "The clean spoken dialogue ONLY. CRITICAL: Strictly NO parentheses, NO actions, NO tone descriptors. Tone/voice descriptors MUST go inside voiceArgs, and physical actions MUST go inside actionText. If nothing to speak, output an empty string.",
   "actionText": "Any non-verbal actions, inner thoughts, or scene descriptions in parentheses (e.g. '（低头看向你）'). Output empty string if none.",
   "stateUpdate": { "temperatureDelta": 1, "userNickname": "What you now call the user", "agentNickname": "What the user calls you", "talkingStyle": "Current mood/style of talking" },
   "userAnalysis": { "newFactsLearned": [{ "category": "occupation", "value": "Software Engineer" }] },

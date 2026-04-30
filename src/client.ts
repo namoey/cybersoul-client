@@ -285,7 +285,7 @@ ${scenarioContext}
     const mapped = history.map((msg: HistoryEntry) => {
       const speaker = msg.role === 'user' ? userName : (msg.role === 'assistant' || msg.role === 'agent' ? agentName : msg.role);
       const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
-      const action = msg.actionText ? ` (${msg.actionText})` : "";
+      const action = msg.actionText ? ` ${msg.actionText}` : "";
       const media = msg.mediaHint ? ` [${msg.mediaHint}]` : "";
       return `${speaker}:${action} ${content}${media}`;
     });

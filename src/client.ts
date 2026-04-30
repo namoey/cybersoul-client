@@ -131,6 +131,21 @@ Current time: ${new Date(state.current_time || Date.now()).toLocaleString("zh-CN
       contextParts.push(`Additional Context: ${localContext}`);
     }
 
+    if (state.core_memory) {
+      let memoryLines = ["[CORE MEMORY]"];
+      const mem = state.core_memory;
+      if (mem.relationshipStatus) memoryLines.push(`Relationship Status: ${mem.relationshipStatus}`);
+      if (mem.identityAnchors?.length) memoryLines.push(`Identity Anchors: ${mem.identityAnchors.join(", ")}`);
+      if (mem.activeArcs?.length) memoryLines.push(`Active Arcs: ${mem.activeArcs.join(", ")}`);
+      if (mem.keyEvents?.length) memoryLines.push(`Key Events: ${mem.keyEvents.join(", ")}`);
+      if (mem.appointments?.length) {
+         memoryLines.push(`Appointments: ${mem.appointments.map(a => `[${a.date || ''} ${a.time || ''}] ${a.title} with ${a.withWhom || 'User'}`).join("; ")}`);
+      }
+      if (memoryLines.length > 1) {
+        contextParts.push(`\n${memoryLines.join("\n")}`);
+      }
+    }
+
     // [3] USER CODEX (Relationships dynamically evaluated)
     if (state.user_codex) {
       const { basicInfo, psychological, familiarityScore = 0 } = state.user_codex;
@@ -261,6 +276,19 @@ ${scenarioContext}
     return payload as VoiceArgs;
   }
 
+  private buildHistoryTranscript(history: any[] | undefined, state: CharacterState): string {
+    if (!history || history.length === 0) return "";
+    const agentName = state.dynamic_context?.agentNickname || state.name || "Agent";
+    const userName = state.dynamic_context?.userNickname || "User";
+    
+    const mapped = history.map((msg: any) => {
+      const speaker = msg.role === 'user' ? userName : (msg.role === 'assistant' || msg.role === 'agent' ? agentName : msg.role);
+      const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+      return `${speaker}: ${content}`;
+    });
+    return `[CHAT HISTORY]\n${mapped.join('\n')}\n\n`;
+  }
+
   /**
    * Evaluates and triggers an on-demand event, intelligently deciding if an outfit change is needed.
    */
@@ -291,15 +319,16 @@ You MUST output ONLY a valid JSON object matching this exact structure:
 
 CRITICAL: Output MUST be ONLY valid JSON with no markdown block wrappers. Do NOT wrap the JSON in \`\`\`json or add conversational text.`;
 
+      const transcript = this.buildHistoryTranscript(params.interactParams?.history, state);
+      const userMessage = params.interactParams?.userMessage ? 
+        `${state.dynamic_context?.userNickname || "User"}: ${params.interactParams.userMessage}` : 
+        `Event Proposal: ${params.eventDescription}`;
+
       const promptMessages = [
         { role: "system", content: systemPrompt },
-        ...(params.interactParams?.history || []).map((msg: any) => ({
-          role: msg.role,
-          content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)
-        })),
         {
           role: "user",
-          content: `${params.interactParams?.userMessage || `Event Proposal: ${params.eventDescription}`}\n\n**CRITICAL REMINDER**: You MUST output your final response exactly in the JSON format specified in the system prompt. DO NOT output plain text directly. CRITICAL: You must properly escape all newlines inside string values using \\n. Never use raw, unescaped line breaks inside the JSON strings.`,
+          content: `${transcript}${userMessage}\n\n**CRITICAL REMINDER**: You MUST output your final response exactly in the JSON format specified in the system prompt. DO NOT output plain text directly. CRITICAL: You must properly escape all newlines inside string values using \\n. Never use raw, unescaped line breaks inside the JSON strings.`,
         },
       ];
 
@@ -387,12 +416,12 @@ Output strictly valid JSON ONLY. No markdown, no conversational filler. Return e
   ${this.getImageSchemaParams()}
 }`;
     
+    const transcript = this.buildHistoryTranscript(params.interactParams?.history, state);
     const promptMessages = [
       { role: "system", content: prompt },
-      ...(params.interactParams?.history || []),
       {
         role: "user",
-        content: `Scene Description: "${params.sceneDescription}"\n\n**CRITICAL REMINDER**: You MUST output your final response exactly in the JSON format specified in the system prompt. DO NOT output plain text dialogue directly. CRITICAL: You must properly escape all newlines inside string values using \\n. Never use raw, unescaped line breaks inside the JSON strings. For 'imageParams', ALL values MUST be in ENGLISH ONLY without exception, and you MUST use the exact English enum strings provided.`,
+        content: `${transcript}Scene Description: "${params.sceneDescription}"\n\n**CRITICAL REMINDER**: You MUST output your final response exactly in the JSON format specified in the system prompt. DO NOT output plain text dialogue directly. CRITICAL: You must properly escape all newlines inside string values using \\n. Never use raw, unescaped line breaks inside the JSON strings. For 'imageParams', ALL values MUST be in ENGLISH ONLY without exception, and you MUST use the exact English enum strings provided.`,
       },
     ];
 
@@ -430,12 +459,12 @@ Output strictly valid JSON ONLY. No markdown, no conversational filler. Return e
   ${this.getVoiceSchemaFromState(state)}
 }`;
     
+    const transcript = this.buildHistoryTranscript(params.interactParams?.history, state);
     const promptMessages = [
       { role: "system", content: prompt },
-      ...(params.interactParams?.history || []),
       {
         role: "user",
-        content: `Text: "${params.text}"\n\n**CRITICAL REMINDER**: You MUST output your final response exactly in the JSON format specified in the system prompt. DO NOT output plain text dialogue directly. CRITICAL: You must properly escape all newlines inside string values using \\n. Never use raw, unescaped line breaks inside the JSON strings.`,
+        content: `${transcript}Text: "${params.text}"\n\n**CRITICAL REMINDER**: You MUST output your final response exactly in the JSON format specified in the system prompt. DO NOT output plain text dialogue directly. CRITICAL: You must properly escape all newlines inside string values using \\n. Never use raw, unescaped line breaks inside the JSON strings.`,
       },
     ];
 
@@ -651,19 +680,22 @@ Output JSON Schema:
 }
 Note: If "imageParams", "voiceArgs", "triggerEvent", or "userAnalysis" are not needed, set their values to null instead of omitting the keys. 'stateUpdate' MUST NEVER BE NULL. Output MUST be ONLY valid JSON with no markdown block wrappers. CRITICAL: Ensure your JSON has exactly one root object \`{\` and ends with exactly one \`}\` without any trailing garbage or extra brackets.`;
 
+      const transcript = this.buildHistoryTranscript(params.history, state);
+      const userName = state.dynamic_context?.userNickname || "User";
+
       const promptMessages = [
         { role: "system", content: systemPrompt },
-        ...(params.history || []),
         {
           role: "user",
           content:
+            transcript + userName + ": " +
             params.userMessage +
             "\n\n**CRITICAL REMINDER**: You MUST output your final response exactly in the JSON format specified in the system prompt. DO NOT output plain text dialogue directly. CRITICAL: You must properly escape all newlines inside string values using \\n. Never use raw, unescaped line breaks inside the JSON strings. For 'imageParams', ALL values MUST be in ENGLISH ONLY without exception, and you MUST use the exact English enum strings provided.",
         },
       ];
 
       // 3. Local Execute LLM
-      const rawLlmResponse = await this.llm.generate(promptMessages, 1500, 0.7);
+      const rawLlmResponse = await this.llm.generate(promptMessages, 15000, 0.7);
       // console.debug("[CyberSoulClient] Raw LLM Response:", rawLlmResponse);
 
       let parsedIntent: DispatcherIntent;

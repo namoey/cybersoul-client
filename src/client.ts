@@ -283,10 +283,12 @@ ${scenarioContext}
 
   private buildHistoryTranscript(history: HistoryEntry[] | undefined, state: CharacterState): string {
     if (!history || history.length === 0) return "";
+    
+    const recentHistory = history.slice(-20);
     const agentName = state.dynamic_context?.agentNickname || state.name || "Agent";
     const userName = state.dynamic_context?.userNickname || "User";
     
-    const mapped = history.map((msg: HistoryEntry) => {
+    const mapped = recentHistory.map((msg: HistoryEntry) => {
       const speaker = msg.role === 'user' ? userName : (msg.role === 'assistant' || msg.role === 'agent' ? agentName : msg.role);
       const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
       const action = msg.actionText ? ` ${msg.actionText}` : "";

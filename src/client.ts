@@ -119,6 +119,10 @@ Interaction Boundaries: ${state.interaction_boundaries || "None"}`);
     contextParts.push(`\n[SITUATIONAL CONTEXT]
 Current time: ${new Date(state.current_time || Date.now()).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}`);
     
+    if (dyn.ongoingScene) {
+      contextParts.push(`Ongoing Scene: ${dyn.ongoingScene}`);
+    }
+
     if (state.active_event) {
       contextParts.push(`Active Event: ${state.active_event.title} (${state.active_event.narrative_context})`);
     }
@@ -198,7 +202,7 @@ ${scenarioContext}
   private getImageSchemaParams(): string {
     return `"imageParams": {
     "mode": "structured | full-prompt (use 'full-prompt' for highly dynamic actions)",
-    "full_prompt": "Use only if mode is full-prompt. Highly detailed visual description in ENGLISH. CRITICAL: MUST use a strict first-person perspective exclusively from the USER's eyes. DO NOT describe the user (e.g., 'a man', 'the driver') as visible in the scene because the camera IS the user. Start with 'POV: '. Describe ONLY the character looking back at the camera and their immediate surroundings. MUST align with the character's current Active Wardrobe unless the context/exposure explicitly demands otherwise.",
+    "full_prompt": "Use only if mode is full-prompt. Highly detailed visual description in ENGLISH. CRITICAL: MUST use a strict first-person perspective exclusively from the USER's eyes. DO NOT describe the user (e.g., 'a man', 'the driver') as visible in the scene because the camera IS the user. Start with 'POV: '. Describe ONLY the character looking back at the camera and their immediate surroundings. MUST align with the character's current Active exposure state or Wardrobe depends on the scene",
     "expression": "seductive | cute | happy | sleepy | dazed | pleased | default (Strictly choose ONE from this exact list. DO NOT invent new words like 'shy'.)",
     "condition": "normal | sweaty | wet | messy | oily (Strictly choose ONE from this exact list.)",
     "view_angle": "front | side | high_angle | from_below | boyfriend_view | selfie | mirror (Strictly choose ONE from this exact list.)",
@@ -673,7 +677,7 @@ Output JSON Schema:
 {
   "textResponse": "The clean spoken dialogue ONLY. CRITICAL: Strictly NO parentheses, NO actions, NO tone descriptors. Tone/voice descriptors MUST go inside voiceArgs, and physical actions MUST go inside actionText. If nothing to speak, output an empty string.",
   "actionText": "Any non-verbal actions, inner thoughts, or scene descriptions in parentheses (e.g. '（低头看向你）'). Output empty string if none.",
-  "stateUpdate": { "temperatureDelta": 1, "userNickname": "What you now call the user", "agentNickname": "What the user calls you", "talkingStyle": "Current mood/style of talking" },
+  "stateUpdate": { "temperatureDelta": 1, "userNickname": "What you now call the user", "agentNickname": "What the user calls you", "talkingStyle": "Current mood/style of talking", "ongoingScene": "A concise 1-sentence description of the current physical scene and activity (e.g. 'We are cuddling on the couch watching a movie'). Update this if the physical scene or activity shifts." },
   "userAnalysis": { "newFactsLearned": [{ "category": "occupation", "value": "Software Engineer" }] },
   "triggerEvent": {
     ${this.getEventSchemaParams(state.dynamic_context?.userNickname)}
@@ -787,6 +791,11 @@ Note: If "imageParams", "voiceArgs", "triggerEvent", or "userAnalysis" are not n
             : {};
 
         let textForVoice = resolvedTextResponse;
+
+        // One final bulletproof regex wash to strip (smiles) and *laughs* just in case the LLM disobeys
+        if (typeof textForVoice === "string") {
+          textForVoice = textForVoice.replace(/[\(（\[【\*].*?[\)）\]】\*]/g, '').trim();
+        }
 
         if (typeof textForVoice !== "string" || textForVoice.trim().length === 0) {
           textForVoice = "...";

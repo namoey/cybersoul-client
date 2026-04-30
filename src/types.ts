@@ -100,6 +100,7 @@ export interface DispatcherIntent {
     userNickname?: string;
     agentNickname?: string;
     talkingStyle?: string;
+    ongoingScene?: string;
   };
   triggerEvent?: {
     eventTitle?: string;

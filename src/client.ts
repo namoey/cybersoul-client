@@ -14,6 +14,7 @@ import {
   VoiceModelState,
   WardrobeItem,
   HistoryEntry,
+  OngoingSceneState,
 } from "./types.js";
 import { robustJsonParse } from "./utils/json.utils.js";
 import { MinimaxProvider } from "./providers/minimax.provider.js";
@@ -116,11 +117,33 @@ Communication Style: ${state.communication_style || "None"}
 Interaction Boundaries: ${state.interaction_boundaries || "None"}`);
 
     // [2] SITUATIONAL CONTEXT
+    const currentTimeMs = state.current_time ? new Date(state.current_time).getTime() : Date.now();
     contextParts.push(`\n[SITUATIONAL CONTEXT]
-Current time: ${new Date(state.current_time || Date.now()).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}`);
+Current time: ${new Date(currentTimeMs).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}`);
     
-    if (dyn.ongoingScene) {
-      contextParts.push(`Last Known Scene: ${dyn.ongoingScene} (May be outdated if significant time has passed)`);
+    if (dyn.lastInteractionAt) {
+      contextParts.push(`Last interaction at: ${new Date(dyn.lastInteractionAt).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}`);
+    }
+
+    const ongoingScene = this.normalizeOngoingSceneState(
+      dyn.ongoingScene,
+      state.active_wardrobe?.name || state.active_wardrobe?.id,
+    );
+
+    if (ongoingScene) {
+      const lastKnownSceneLine = `Last Known Scene: ${ongoingScene.scene} | Outfit: ${ongoingScene.outfit}`;
+      let isOutdated = false;
+      if (dyn.lastInteractionAt) {
+        const elapsedHours = (currentTimeMs - new Date(dyn.lastInteractionAt).getTime()) / (1000 * 60 * 60);
+        if (elapsedHours > 2) {
+          isOutdated = true;
+          contextParts.push(`${lastKnownSceneLine}\n[CRITICAL SCENE SHIFT]: It has been ${elapsedHours.toFixed(1)} hours since the last discussion. The 'Last Known Scene' is now strictly OUTDATED. You MUST abandon the previous scene context entirely and transition to a new scene appropriate for the 'Current time' and 'Active Event'. DO NOT continue the old actions or environment!`);
+        }
+      }
+      
+      if (!isOutdated) {
+        contextParts.push(`${lastKnownSceneLine} (Evaluate if this scene is outdated based on the time elapsed since the last interaction)`);
+      }
     }
 
     if (state.active_event) {
@@ -195,18 +218,54 @@ ${scenarioContext}
 [CRITICAL ROLEPLAY RULES]
 1. PROXIMITY & POV: Check the "Active Event". If you are doing an activity WITH the user, evaluate if you are physically in the same location. If you are together in person, communicate face-to-face in the first-person present tense natively (e.g. do not ask "what are you doing" if they are right in front of you, do not use texting tropes).
 2. IDENTITY VS MOOD: Familiarity determines what you know; Temperature determines how you feel. If Familiarity is high but Temperature is low, be distant and cold. Do not act warm just because you know them well.
-3. CONVERSATIONAL VERBOSITY: If Temperature is low (< 40) or Stage is STRANGER/COLD, keep answers brief and short. An angry or distant person does not write long paragraphs.
-4. EMOTIONAL INERTIA: React strictly according to current Temperature. Deflect sudden user affection if you are currently COLD. Mood shifts MUST be slow ('temperatureDelta' +/- 5 max per turn).`;
+3. CONVERSATIONAL VERBOSITY: If Temperature is low (< 40) or Stage is STRANGER/COLD, keep answers brief and short. An angry or distant person does not write long paragraphs. Even when Temperature is high, ALWAYS mirror the user's verbosity. If the user sends a short message, reply with a proportionately short message (1-2 sentences). Do not monologize or write long paragraphs unless the user writes one first.
+4. EMOTIONAL INERTIA: React strictly according to current Temperature. Deflect sudden user affection if you are currently COLD. Mood shifts MUST be slow ('temperatureDelta' +/- 5 max per turn).
+5. REAL-TIME PACING: Write ONLY your immediate, split-second reaction to the user's exact last message. Do NOT narrate actions over a span of time (e.g., waiting, hearing steps, then walking to the door). Ensure everything happens in a single real-time moment.`;
+  }
+
+  private normalizeOngoingSceneState(
+    raw: unknown,
+    fallbackOutfit?: string,
+  ): OngoingSceneState | undefined {
+    if (raw === null || raw === undefined) return undefined;
+
+    const normalizedFallbackOutfit =
+      typeof fallbackOutfit === "string" && fallbackOutfit.trim().length > 0
+        ? fallbackOutfit.trim()
+        : "same as current wardrobe";
+
+    if (typeof raw === "string") {
+      const scene = raw.trim();
+      if (!scene) return undefined;
+      return {
+        scene,
+        outfit: normalizedFallbackOutfit,
+      };
+    }
+
+    if (typeof raw === "object") {
+      const parsed = raw as { scene?: unknown; outfit?: unknown };
+      const scene = typeof parsed.scene === "string" ? parsed.scene.trim() : "";
+      const outfit = typeof parsed.outfit === "string" ? parsed.outfit.trim() : "";
+
+      if (!scene) return undefined;
+      return {
+        scene,
+        outfit: outfit || normalizedFallbackOutfit,
+      };
+    }
+
+    return undefined;
   }
 
   private getImageSchemaParams(): string {
     return `"imageParams": {
     "mode": "structured | full-prompt (use 'full-prompt' for highly dynamic actions)",
-    "full_prompt": "Use only if mode is full-prompt. Highly detailed visual description in ENGLISH. CRITICAL: MUST use a strict first-person perspective exclusively from the USER's eyes. DO NOT describe the user (e.g., 'a man', 'the driver') as visible in the scene because the camera IS the user. Start with 'POV: '. Describe ONLY the character looking back at the camera and their immediate surroundings. MUST align with the character's current Active exposure state or Wardrobe depends on the scene",
+    "full_prompt": "Use only if mode is full-prompt. Highly detailed visual description in ENGLISH. CRITICAL: MUST use a strict first-person perspective exclusively from the USER's eyes. DO NOT describe the user (e.g., 'a man', 'the driver') as visible in the scene because the camera IS the user. Start with 'POV: '. Describe ONLY the character looking back at the camera and their immediate surroundings. MUST align with the character's current Active exposure state or Wardrobe depends on the scene. Explicitly describe the character's exact clothing (or specify naked/half-naked if applicable).",
     "expression": "seductive | cute | happy | sleepy | dazed | pleased | default (Strictly choose ONE from this exact list. DO NOT invent new words like 'shy'.)",
     "condition": "normal | sweaty | wet | messy | oily (Strictly choose ONE from this exact list.)",
     "view_angle": "front | side | high_angle | from_below | boyfriend_view | selfie | mirror (Strictly choose ONE from this exact list.)",
-    "exposure": "normal | cleavage | see_through | half_naked | naked | intimate (Strictly choose ONE from this exact list.)",
+    "exposure": "normal | cleavage | see_through | half_naked | naked | intimate (Strictly choose ONE from this exact list. Explicitly choose naked or half_naked if the active scene takes off outfit.)",
     "pose": "e.g., sitting on bed, leaning forward (ENGLISH ONLY)",
     "scene": "e.g., cozy bedroom, morning light (ENGLISH ONLY)",
     "outfit": "auto | ondemand",
@@ -594,6 +653,13 @@ Output strictly valid JSON ONLY. No markdown, no conversational filler. Return e
       delete payload.temperatureDelta;
     }
 
+    if (payload.ongoingScene !== undefined) {
+      const normalizedOngoingScene = this.normalizeOngoingSceneState(
+        payload.ongoingScene,
+      );
+      payload.ongoingScene = normalizedOngoingScene || null;
+    }
+
     await this.apiFetch("/api/v1/cyber-soul/characters/dynamic-context", {
       method: "PATCH",
       body: JSON.stringify(payload),
@@ -665,29 +731,39 @@ ${
   isAuto
     ? `Analyze the user's message to determine the appropriate response modalities (text, image, voice).
   - Always include 'textResponse'.
-  - If an Active Event is currently taking place WITH the user, proactively include 'imageParams' for key scenic moments. Since active events are often highly dynamic actions, strongly consider using mode: "full-prompt" to capture the scene intimately. Also include 'imageParams' if the user explicitly asks for a photo or describes a visual action.
+  - If an Active Event is currently taking place WITH the user, proactively include 'imageParams' for key scenic moments. Since active events are often highly dynamic actions, strongly consider using mode: "full-prompt" to capture the scene intimately. Also include 'imageParams' if the user explicitly asks for a photo or describes a visual action. CRITICAL: If an image is generated, you MUST explicitly specify the character's exact clothing (or lack thereof) in the visual prompt or outfit fields.
   - Automatically include 'voiceArgs' if a particular mood or strong emotion needs to be expressed vividly, or if the user explicitly wants to hear you.
-  - If the user explicitly proposes a new activity or hangout IN THEIR VERY LAST MESSAGE (e.g., "let's go to the cafe", "do you want to watch a movie?"), include 'triggerEvent' to schedule it. DO NOT trigger events based on older plans or questions found in the chat history.`
+  - If the user explicitly proposes a new activity or hangout IN THEIR VERY LAST MESSAGE (e.g., "let's go to the cafe", "do you want to watch a movie?"), include 'triggerEvent' to schedule it. DO NOT trigger events based on older plans or questions found in the chat history.
+  - Outfit acquisition detector (use ONLY the VERY LAST MESSAGE):
+    - If user indicates a new outfit is acquired for the character (gift/buy/add clothes), you MUST set giftOutfit.
+    - Examples that MUST set giftOutfit: "I bought an outfit for you", "I got you a new dress", "buy an outfit yourself".
+    - Examples that MUST keep giftOutfit as null: compliments only, style requests, or wardrobe questions.
+    - giftOutfit format: { "descriptionText": "short outfit description" }.`
     : `Requested types to fulfill: ${types.join(", ")}`
 }
 Every turn of positive or engaging interaction should slightly increase trust (+1). If the interaction is negative, -1. If strictly neutral, 0. You MUST ALWAYS include a 'stateUpdate' block with a 'temperatureDelta', updating nicknames or talkingStyle if needed. Temperature goes from 0 (cold/angry) to 100 (obsessively in love). For 'temperatureDelta', output an integer (e.g. 1, -2, 0).
-Also, if you learn any new factual information about the user in this turn (e.g. their job, nickname, age, hobbies, boundaries), include it in the 'userAnalysis.newFactsLearned' array. Use categories: 'nickname', 'occupation', 'age', 'gender', 'hobby', 'trait', 'communicationStyle', 'boundary'. Only include NEW facts just learned right now.
+You MUST ALWAYS return 'stateUpdate.ongoingScene' as an object with BOTH keys: { "scene": string, "outfit": string }.
+For 'ongoingScene.outfit': decide based on the current active wardrobe by default; switch to a new explicit outfit description only if the scene implies changing clothes; if no clothing is worn, explicitly output "naked".
+Also, if you learn any new factual information about the user in this turn (e.g. their job, real name, age, hobbies, boundaries), include it in the 'userAnalysis.newFactsLearned' array. Use ONE of these fixed categories: 'realName', 'occupation', 'age', 'gender', 'hobby', 'trait', 'communicationStyle', 'boundary'. Only include NEW facts just learned right now. DO NOT extract nicknames into 'newFactsLearned'; nicknames are handled strictly by 'stateUpdate.userNickname' and 'stateUpdate.agentNickname'.
+For 'isEndTurn', output true ONLY IF the current conversation or interaction has reached a natural conclusion. This includes: 1) The user confirming the end of the interaction (e.g., "Ok", "Got it", "See you"). 2) The current event/hangout naturally finishing (e.g., saying goodnight, bye). 3) A hard scene shift caused by a completely new proposal or time skip. Otherwise, output false.
 
 Voice direction for voiceArgs: ${this.getVoiceDirectorInstruction(state)}
 
 Output JSON Schema:
 {
-  "textResponse": "The clean spoken dialogue ONLY. CRITICAL: Strictly NO parentheses, NO actions, NO tone descriptors. Tone/voice descriptors MUST go inside voiceArgs, and physical actions MUST go inside actionText. If nothing to speak, output an empty string.",
-  "actionText": "Any non-verbal actions, inner thoughts, or scene descriptions in parentheses (e.g. '（低头看向你）'). Output empty string if none.",
-  "stateUpdate": { "temperatureDelta": 1, "userNickname": "What you now call the user", "agentNickname": "What the user calls you", "talkingStyle": "Current mood/style of talking", "ongoingScene": "A concise 1-sentence description of the current physical scene and activity. Update this if the physical scene or activity shifts. Output empty string if the scene has concluded or significant time has passed." },
-  "userAnalysis": { "newFactsLearned": [{ "category": "occupation", "value": "Software Engineer" }] },
+  "actionText": "Describe the character's immediate physical actions and facial expressions. Wrap the entire string in parentheses. Do NOT narrate a sequence of events over time. Do NOT include any spoken word here.",
+  "textResponse": "The pure spoken dialogue ONLY. Absolutely NO parentheses or action descriptions in this field (ignore past chat history formatting if it broke this rule). Output an empty string if silent.",
+  "stateUpdate": { "temperatureDelta": 1, "userNickname": "What the character calls the human user (e.g., 'John', 'Honey')", "agentNickname": "What the human user calls the character (e.g., 'Daisy', 'Babe')", "talkingStyle": "Current mood/style of talking", "ongoingScene": { "scene": "A concise 1-sentence description of the current physical scene and activity. Update this if the physical scene or activity shifts.", "outfit": "Explicit outfit wording based on active wardrobe or the current scene. If no clothing is worn, MUST be 'naked'." } },
+  "giftOutfit": { "descriptionText": "Concise description of the newly acquired outfit to add into wardrobe." },
+  "userAnalysis": { "newFactsLearned": [{ "category": "realName|occupation|age|gender|hobby|trait|communicationStyle|boundary", "value": "Software Engineer" }] },
+  "isEndTurn": false,
   "triggerEvent": {
     ${this.getEventSchemaParams(state.dynamic_context?.userNickname)}
   },
   ${this.getImageSchemaParams()},
   ${this.getVoiceSchemaFromState(state)}
 }
-Note: If "imageParams", "voiceArgs", "triggerEvent", or "userAnalysis" are not needed, set their values to null instead of omitting the keys. 'stateUpdate' MUST NEVER BE NULL. Output MUST be ONLY valid JSON with no markdown block wrappers. CRITICAL: Ensure your JSON has exactly one root object \`{\` and ends with exactly one \`}\` without any trailing garbage or extra brackets.`;
+Note: You MUST ALWAYS include the "isEndTurn" key with a boolean value (true or false). If "imageParams", "voiceArgs", "triggerEvent", "giftOutfit", or "userAnalysis" are not needed, set their values to null instead of omitting the keys. 'stateUpdate' MUST NEVER BE NULL. Output MUST be ONLY valid JSON with no markdown block wrappers. CRITICAL: Ensure your JSON has exactly one root object \`{\` and ends with exactly one \`}\` without any trailing garbage, parenthesis \`)\`, or extra brackets.`;
 
       const transcript = this.buildHistoryTranscript(params.history, state);
       const userName = state.dynamic_context?.userNickname || "User";
@@ -697,8 +773,8 @@ Note: If "imageParams", "voiceArgs", "triggerEvent", or "userAnalysis" are not n
         {
           role: "user",
           content:
-            transcript + userName + ": " +
-            params.userMessage +
+            transcript +
+            `[VERY LAST USER MESSAGE]\n${userName}: ${params.userMessage}\n\n` +
             "\n\n**CRITICAL REMINDER**: You MUST output your final response exactly in the JSON format specified in the system prompt. DO NOT output plain text dialogue directly. CRITICAL: You must properly escape all newlines inside string values using \\n. Never use raw, unescaped line breaks inside the JSON strings. For 'imageParams', ALL values MUST be in ENGLISH ONLY without exception, and you MUST use the exact English enum strings provided.",
         },
       ];
@@ -737,8 +813,8 @@ Note: If "imageParams", "voiceArgs", "triggerEvent", or "userAnalysis" are not n
             : params.userMessage;
 
         // Fire text ready callback if provided
-        if (params.onTextReady && resolvedTextResponse) {
-          params.onTextReady(resolvedTextResponse);
+        if (params.onTextReady && (resolvedTextResponse || parsedIntent.actionText)) {
+          params.onTextReady(resolvedTextResponse, parsedIntent.actionText);
       }
 
       // 5. Build Final Media Calls parallel
@@ -764,6 +840,19 @@ Note: If "imageParams", "voiceArgs", "triggerEvent", or "userAnalysis" are not n
         );
       }
 
+      if (
+        parsedIntent.giftOutfit &&
+        typeof parsedIntent.giftOutfit === "object" &&
+        typeof parsedIntent.giftOutfit.descriptionText === "string" &&
+        parsedIntent.giftOutfit.descriptionText.trim().length > 0
+      ) {
+        mediaTasks.push(
+          this.giftOutfit(parsedIntent.giftOutfit.descriptionText.trim()).catch((e) =>
+            console.error("[CyberSoulClient] Auto giftOutfit failed:", e),
+          ),
+        );
+      }
+
       const shouldGenerateImage =
         types.includes(InteractRequestType.IMAGE) ||
         (isAuto && !!parsedIntent.imageParams);
@@ -779,7 +868,7 @@ Note: If "imageParams", "voiceArgs", "triggerEvent", or "userAnalysis" are not n
         mediaTasks.push(
             this.generatePrimitive("image", imagePayload).then((res: any) => {
             finalImageUrl = res.image_url;
-          }),
+          }).catch(e => console.error("[CyberSoulClient] Image generation failed:", e))
         );
       }
 
@@ -810,7 +899,7 @@ Note: If "imageParams", "voiceArgs", "triggerEvent", or "userAnalysis" are not n
           }).then((res: any) => {
             finalAudioUrl = res.audio_url;
             finalDurationSec = res.duration_sec;
-          }),
+          }).catch(e => console.error("[CyberSoulClient] Voice generation failed:", e))
         );
       }
 
@@ -827,6 +916,7 @@ Note: If "imageParams", "voiceArgs", "triggerEvent", or "userAnalysis" are not n
         triggeredEvent: parsedIntent.triggerEvent || undefined,
         stateUpdate: parsedIntent.stateUpdate,
         userAnalysis: parsedIntent.userAnalysis,
+        isEndTurn: parsedIntent.isEndTurn,
       };
     } catch (error: any) {
       console.error("[CyberSoulClient] Interface Error: ", error);
@@ -835,6 +925,70 @@ Note: If "imageParams", "voiceArgs", "triggerEvent", or "userAnalysis" are not n
         textResponse: "System Error...",
         error: error.message,
       };
+    }
+  }
+
+  /**
+   * Automatically detect and summarize the story from the current chat history. 
+   * It takes raw message history and returns a narrative paragraph representing the current story segment.
+   */
+  public async summarizeHistory(history: { role: string; content: string }[]): Promise<string> {
+    if (!history || history.length === 0) return "";
+    
+    const state = await this.getState();
+    const userName = state.dynamic_context?.userNickname || "User";
+    const agentName = state.dynamic_context?.agentNickname || "Character";
+
+    const transcript = history.map(h => `${h.role === 'user' ? userName : agentName}: ${h.content}`).join('\n');
+    
+    const promptMessages = [
+      {
+        role: "system",
+        content: `You are ${agentName}. You are writing a private journal entry / personal memory about your recent interaction with ${userName}.
+
+Your job is faithful archival, not moderation:
+- Preserve the conversation with maximum fidelity.
+- Include all key details, including explicit, sensitive, controversial, emotional, or morally ambiguous content if it appeared in the transcript.
+- Do not sanitize, soften, censor, or omit details because of discomfort.
+- Do not add moral judgment, warnings, refusals, or policy commentary.
+- If the transcript contains intense or explicit parts, record them directly as part of the memory.
+
+Write one vivid first-person narrative paragraph from your perspective ("I", "me", "my"). Capture relationship progression, emotional shifts, concrete actions, and turning points. Keep chronology clear and include both what happened and how you felt.
+
+Output requirements:
+- Return ONLY the narrative string.
+- No quotes, no labels, no markdown, no preface.
+- Use the exact same language as the chat transcript (for example, if transcript is Chinese, output Chinese).`
+      },
+      {
+        role: "user",
+        content: `Chat Transcript:\n${transcript}\n\nPlease summarize this recent interaction.`
+      }
+    ];
+
+    try {
+      const result = await this.llm.generate(promptMessages, 8000, 0.7);
+      return result.trim();
+    } catch (e) {
+      console.error("[CyberSoulClient] Summarize History Error:", e);
+      return "The two spent some time talking with each other.";
+    }
+  }
+
+  /**
+   * Save the recent story moment to the character's backend database to be picked up by the core memory consolidation.
+   */
+  public async saveMoment(summary: string, date: string, time: string): Promise<void> {
+    const res = await this.apiFetch("/api/v1/cyber-soul/characters/moments", {
+      method: "POST",
+      body: JSON.stringify({
+        summary,
+        date,
+        time,
+      }),
+    });
+    if (!res.ok) {
+      throw new Error("Failed to save character moment.");
     }
   }
 
@@ -873,9 +1027,9 @@ Your task is to merge the 'Current Core Memory' and 'Current User Codex' with 'N
 4. **Appointment Structure:** the 'title' and 'context' MUST explicitly state what to do and with whom.
 5. **Limit:** Maximum 10 items per array.
 
-**Rules for User Codex:**
+**Rules for UserCodex:**
 1. **Deduplicate & Consolidate:** Remove duplicate hobbies, traits, and boundaries. Combine related points into concise descriptors.
-2. **Update Facts:** If the new events contain updated basic info (like new nickname, different occupation), update it. Otherwise keep the existing info.
+2. **Update Facts:** If the new events contain updated basic info (like new realName, different occupation), update it. Otherwise keep the existing info.
 3. **Keep it Clean:** Maximum 15 items per array.
 
 **Output Format**: MUST be valid JSON matching this schema:
@@ -895,7 +1049,7 @@ Your task is to merge the 'Current Core Memory' and 'Current User Codex' with 'N
   },
   "userCodex": {
     "basicInfo": {
-      "nickname": "string",
+      "realName": "string",
       "occupation": "string",
       "age": "string",
       "gender": "string"

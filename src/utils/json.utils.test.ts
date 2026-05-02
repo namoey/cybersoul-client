@@ -148,8 +148,23 @@ function runTests() {
         assert.equal(result['key_2'], 'val2');
         assert.equal(result['empty'], '');
       }
-    }
-  ];
+    },
+    {
+      name: 'robustJsonParse - edge LLM trailing parenthesis hallucination',
+      run: () => {
+        const json = `{"key":"value"})}`;
+        const result = robustJsonParse<any>(json);
+        assert.equal(result.key, 'value');
+      }
+    },
+    {
+      name: 'robustJsonParse - edge LLM trailing parenthesis hallucination with spacing',
+      run: () => {
+        const json = `{"key":"value"}  )  }`;
+        const result = robustJsonParse<any>(json);
+        assert.equal(result.key, 'value');
+      }
+    }  ];
 
   for (const t of tests) {
     try {

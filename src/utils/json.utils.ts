@@ -1,12 +1,18 @@
 export function robustJsonParse<T>(jsonString: string, contextMessage: string = 'throwing original error'): T {
   let cleanJson = jsonString.trim();
   
-  // 0. Replace smart quotes with standard ASCII double quotes
-  cleanJson = cleanJson.replace(/[“”]/g, '"');
+  // 0. Inject missing colons between string keys and string values (e.g. "key""value" -> "key":"value")
+  // Only insert the colon if we match a likely key (alphanumeric/hyphen) followed by quotes, handling smart quotes.
+  cleanJson = cleanJson.replace(/([”“"'][\w-]+[”“"'])\s*([”“"'])/g, '$1:$2');
 
-  // 0.1 Inject missing colons between string keys and string values (e.g. "key""value" -> "key":"value")
-  // Only insert the colon if we match a likely key (alphanumeric/hyphen) followed by quotes.
-  cleanJson = cleanJson.replace(/("[\w-]+")\s*(")/g, '$1:$2');
+  // 0.1 Safely convert structural smart quotes to regular ASCII double quotes
+  // This allows proper parsing of keys/values that start/end with smart quotes,
+  // without accidentally unescaping double quotes *inside* string text.
+  cleanJson = cleanJson.replace(/([\{\[\:,]\s*)[“”]/g, '$1"');
+  cleanJson = cleanJson.replace(/[“”](\s*[\}\]\:,])/g, '"$1');
+
+  // 0.2 Any remaining smart quotes are inside string boundaries. Replace with safe single quotes.
+  cleanJson = cleanJson.replace(/[“”]/g, "'");
 
   // 1. Strip Markdown code blocks (tolerates missing closing backticks)
   const jsonMatch = cleanJson.match(/```(?:json)?\n?([\s\S]*?)(?:```|$)/i);
@@ -14,16 +20,20 @@ export function robustJsonParse<T>(jsonString: string, contextMessage: string = 
     cleanJson = jsonMatch[1].trim();
   }
 
-  // 2. Strip any leading conversational text via fast substring
-  if (!cleanJson.startsWith('{') && cleanJson.includes('{')) {
+  // 2. Strip any leading conversational text or trailing garbage via fast substring
+  if (cleanJson.includes('{') && cleanJson.includes('}')) {
     const firstIdx = cleanJson.indexOf('{');
     const lastIdx = cleanJson.lastIndexOf('}');
-    if (firstIdx !== -1 && lastIdx > firstIdx) {
+    if (firstIdx !== -1 && lastIdx !== -1 && lastIdx > firstIdx) {
       cleanJson = cleanJson.substring(firstIdx, lastIdx + 1);
     }
   }
 
-  // 3. Preprocess: escape unescaped newlines and control characters within string values
+  // 3. Fix common Edge LLM hallucinations of wrapping the JSON end with parenthesis like `})}` or `}})`
+  cleanJson = cleanJson.replace(/}\s*\)\s*}/g, '}}');
+  cleanJson = cleanJson.replace(/\)\s*}/g, '}');
+
+  // 4. Preprocess: escape unescaped newlines and control characters within string values
   function preprocessControlChars(str: string): string {
     let result = '';
     let inString = false;

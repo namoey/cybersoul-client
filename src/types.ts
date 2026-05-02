@@ -31,7 +31,7 @@ export interface InteractParams {
   localContext?: string;
   requestTypes?: InteractRequestType[];
   history?: HistoryEntry[];
-  onTextReady?: (textResponse: string) => void;
+  onTextReady?: (textResponse: string, actionText?: string) => void;
 }
 
 export interface OndemandEventParams {
@@ -73,7 +73,13 @@ export interface InteractResponse {
   };
   stateUpdate?: DispatcherIntent["stateUpdate"];
   userAnalysis?: DispatcherIntent["userAnalysis"];
+  isEndTurn?: boolean;
   error?: string;
+}
+
+export interface OngoingSceneState {
+  scene: string;
+  outfit: string;
 }
 
 export interface DispatcherIntent {
@@ -81,10 +87,13 @@ export interface DispatcherIntent {
   actionText?: string;
   imageParams?: any;
   voiceArgs?: VoiceArgs | null;
+  giftOutfit?: {
+    descriptionText: string;
+  } | null;
   userAnalysis?: {
     newFactsLearned: {
       category:
-        | "nickname"
+        | "realName"
         | "occupation"
         | "age"
         | "gender"
@@ -100,7 +109,7 @@ export interface DispatcherIntent {
     userNickname?: string;
     agentNickname?: string;
     talkingStyle?: string;
-    ongoingScene?: string;
+    ongoingScene?: OngoingSceneState | string | null;
   };
   triggerEvent?: {
     eventTitle?: string;
@@ -110,6 +119,7 @@ export interface DispatcherIntent {
     scheduledStartTimeStr?: string | null;
     scheduledDateStr?: string | null;
   } | null;
+  isEndTurn?: boolean;
 }
 
 export interface Appointment {
@@ -130,7 +140,7 @@ export interface CoreMemory {
 
 export interface UserCodex {
   basicInfo: {
-    nickname?: string;
+    realName?: string;
     occupation?: string;
     age?: number | string;
     gender?: string;
@@ -181,7 +191,15 @@ export interface CharacterState {
   next_event?: any;
   active_wardrobe?: any;
   core_memory?: CoreMemory;
-  dynamic_context?: any;
+  dynamic_context?: {
+    temperature?: number;
+    userNickname?: string;
+    agentNickname?: string;
+    talkingStyle?: string;
+    lastInteractionAt?: string;
+    ongoingScene?: OngoingSceneState | string | null;
+    [key: string]: unknown;
+  };
   voice_model?: VoiceModelState | null;
   relationship_stage?: string;
   name?: string;

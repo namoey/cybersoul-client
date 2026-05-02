@@ -100,7 +100,8 @@ export interface DispatcherIntent {
         | "hobby"
         | "trait"
         | "communicationStyle"
-        | "boundary";
+        | "boundary"
+        | "preference";
       value: string;
     }[];
   };
@@ -150,6 +151,7 @@ export interface UserCodex {
     traits: string[];
     communicationStyle: string;
     boundaries: string[];
+    preferences?: string[];
   };
   familiarityScore?: number;
 }

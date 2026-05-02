@@ -1,4 +1,8 @@
-export function robustJsonParse<T>(jsonString: string, contextMessage: string = 'throwing original error'): T {
+export function robustJsonParse<T>(
+  jsonString: string, 
+  contextMessage: string = 'throwing original error',
+  fallbackTemplate?: Record<string, any>
+): T {
   let cleanJson = jsonString.trim();
   
   // 0. Inject missing colons between string keys and string values (e.g. "key""value" -> "key":"value")
@@ -127,6 +131,42 @@ export function robustJsonParse<T>(jsonString: string, contextMessage: string = 
         }
       }
     }
+
+    // FINAL FALLBACK: Regex extraction of requested fields if fallbackTemplate is provided
+    if (fallbackTemplate) {
+      console.warn(`[robustJsonParse] Regex fallback using template for: ${contextMessage}`);
+      const extractedObj: any = { ...fallbackTemplate };
+      let extractedAny = false;
+      
+      for (const key of Object.keys(fallbackTemplate)) {
+        // 1. Try to extract string values handling escaped characters like \" and \n
+        const stringMatch = cleanJson.match(new RegExp(`"${key}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`));
+        if (stringMatch) {
+          try {
+            extractedObj[key] = JSON.parse(`"${stringMatch[1]}"`);
+          } catch (err) {
+            extractedObj[key] = stringMatch[1];
+          }
+          extractedAny = true;
+          continue;
+        }
+        
+        // 2. Try to extract booleans, numbers, or null
+        const primitiveMatch = cleanJson.match(new RegExp(`"${key}"\\s*:\\s*([a-zA-Z0-9_.-]+)`));
+        if (primitiveMatch) {
+          const val = primitiveMatch[1];
+          if (val === 'true') { extractedObj[key] = true; extractedAny = true; }
+          else if (val === 'false') { extractedObj[key] = false; extractedAny = true; }
+          else if (val === 'null') { extractedObj[key] = null; extractedAny = true; }
+          else if (!isNaN(Number(val))) { extractedObj[key] = Number(val); extractedAny = true; }
+        }
+      }
+
+      if (extractedAny) {
+        return extractedObj as T;
+      }
+    }
+
     console.warn(`Failed to parse Dispatcher Intent: ${contextMessage}. Falling back to plain text.`);
     throw e;
   }

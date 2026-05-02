@@ -290,7 +290,8 @@ Occupation: ${basicInfo?.occupation || "Unknown"}
 Age/Gender: ${basicInfo?.age || "Unknown"} / ${basicInfo?.gender || "Unknown"}
 Comm Style: ${psychological?.communicationStyle || "Unknown"}
 Hobbies: ${(psychological?.hobbies || []).join(", ") || "Unknown"}
-Traits/Boundaries: ${(psychological?.traits || []).join(", ") || "Unknown"} / ${(psychological?.boundaries || []).join(", ") || "Unknown"}`);
+Traits/Boundaries: ${(psychological?.traits || []).join(", ") || "Unknown"} / ${(psychological?.boundaries || []).join(", ") || "Unknown"}
+Preferences/Habits: ${(psychological?.preferences || []).join(", ") || "Unknown"}`);
 
       // CURIOSITY DRIVE: Find what's missing, but ONLY IF we are on generally warm speaking terms
       // Paradox avoidance: A cold/angry character shouldn't enthusiastically fish for hobbies.
@@ -501,7 +502,7 @@ For 'ongoingScene.outfit': decide based on the current active wardrobe by defaul
 USER ANALYSIS WORKFLOW:
 - Extract from VERY LAST USER MESSAGE only.
 - Add only explicit new user facts from this turn (no inference).
-- Categories: 'realName', 'occupation', 'age', 'gender', 'hobby', 'trait', 'communicationStyle', 'boundary'.
+- Categories: 'realName', 'occupation', 'age', 'gender', 'hobby', 'trait', 'communicationStyle', 'boundary', 'preference'.
 - Keep nicknames in stateUpdate; do not place them in newFactsLearned.
 - If no new fact is explicit, set userAnalysis to null.
 
@@ -515,7 +516,7 @@ Output JSON Schema:
   "textResponse": "Spoken dialogue ONLY. Never include actions or parentheses.",
   "stateUpdate": { "temperatureDelta": 1, "userNickname": "How character addresses user", "agentNickname": "How user addresses character", "talkingStyle": "Current speaking style", "ongoingScene": { "scene": "Current physical scene/activity", "outfit": "Current outfit wording; use 'naked' when applicable" } },
   "giftOutfit": { "descriptionText": "Concise description of the newly acquired outfit to add into wardrobe." },
-  "userAnalysis": { "newFactsLearned": [{ "category": "realName|occupation|age|gender|hobby|trait|communicationStyle|boundary", "value": "explicit new user fact from VERY LAST USER MESSAGE" }] },
+  "userAnalysis": { "newFactsLearned": [{ "category": "realName|occupation|age|gender|hobby|trait|communicationStyle|boundary|preference", "value": "explicit new user fact from VERY LAST USER MESSAGE" }] },
   "isEndTurn": false,
   "triggerEvent": {
     ${this.getEventSchemaParams(state.dynamic_context?.userNickname)}
@@ -548,6 +549,7 @@ Note: Always include "isEndTurn". If "imageParams", "voiceArgs", "triggerEvent",
         parsedIntent = robustJsonParse<DispatcherIntent>(
           rawLlmResponse,
           "Dispatcher fallback",
+          { textResponse: "", actionText: "", isEndTurn: false }
         );
       } catch (e) {
         console.warn(
@@ -1018,6 +1020,7 @@ Output requirements:
           traits: [],
           communicationStyle: "",
           boundaries: [],
+          preferences: [],
         }
       };
 
@@ -1032,7 +1035,7 @@ Your task is to merge the 'Current Core Memory' and 'Current User Codex' with 'N
 5. **Limit:** Maximum 10 items per array.
 
 **Rules for UserCodex:**
-1. **Deduplicate & Consolidate:** Remove duplicate hobbies, traits, and boundaries. Combine related points into concise descriptors.
+1. **Deduplicate & Consolidate:** Remove duplicate hobbies, traits, boundaries, and preferences. Combine related points into concise descriptors.
 2. **Update Facts:** If the new events contain updated basic info (like new realName, different occupation), update it. Otherwise keep the existing info.
 3. **Keep it Clean:** Maximum 15 items per array.
 
@@ -1062,7 +1065,8 @@ Your task is to merge the 'Current Core Memory' and 'Current User Codex' with 'N
       "hobbies": ["string"],
       "traits": ["string"],
       "communicationStyle": "string",
-      "boundaries": ["string"]
+      "boundaries": ["string"],
+      "preferences": ["string"]
     }
   }
 }

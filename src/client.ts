@@ -396,7 +396,7 @@ ${scenarioContext}
     "scheduledDateStr": "YYYY-MM-DD (Optional. If the user specifies a future date like 'tomorrow', 'Saturday', or 'next week', calculate the exact calendar date based on the 'Current time' provided in the context and output it here. Otherwise, return null)",
     "scheduledStartTimeStr": "HH:MM (Optional, 24-hour format if a specific time is agreed upon, e.g., '14:30', otherwise null)",
     "durationMins": 60,
-    "outfitId": "optional wardrobe ID to change into if appropriate"`;
+    "outfitId": "optional wardrobe ID to change into if appropriate. MUST match the context of the event (e.g. SLEEPWEAR for bed, INTIMATE for romance, DAILY for going out)"`;
   }
 
   private getVoiceSchemaParams(): string {
@@ -745,6 +745,7 @@ Note: Always include "isEndTurn". If "imageParams", "voiceArgs", "triggerEvent",
 The user proposes a new event for you to participate in: "${params.eventDescription}".
 Evaluate this based on your current state and relationship stage.
 Decide if you will accept the event, and whether it requires changing your outfit.
+When changing outfits, perfectly match the outfit to the event's activity, environment, and relationship stage. Consider the wardrobe category (e.g., DAILY, INTIMATE, SLEEPWEAR).
 
 Available Wardrobe Outfits:
 ${availableOutfits || "None available"}

@@ -183,14 +183,21 @@ export class CyberSoulClient {
   private normalizeRequestTypes(
     requestTypes?: InteractRequestType[],
   ): InteractRequestType[] {
-    if (!requestTypes || requestTypes.length === 0) {
-      return [InteractRequestType.AUTO];
+    let normalized = requestTypes;
+    if (!normalized || normalized.length === 0) {
+      normalized = [InteractRequestType.AUTO, InteractRequestType.TEXT];
+    } else {
+      normalized = [...normalized];
+    }
+
+    if (!normalized.includes(InteractRequestType.TEXT)) {
+      normalized.push(InteractRequestType.TEXT);
     }
 
     const validRequestTypes = new Set<string>(
       Object.values(InteractRequestType),
     );
-    const invalidRequestTypes = requestTypes.filter(
+    const invalidRequestTypes = normalized.filter(
       (type) => !validRequestTypes.has(type),
     );
 
@@ -200,7 +207,7 @@ export class CyberSoulClient {
       );
     }
 
-    return requestTypes;
+    return normalized;
   }
 
   private buildStateContextPrompt(
@@ -241,7 +248,7 @@ Current time: ${new Date(currentTimeMs).toLocaleString("zh-CN", { timeZone: "Asi
       let isOutdated = false;
       if (dyn.lastInteractionAt) {
         const elapsedHours = (currentTimeMs - new Date(dyn.lastInteractionAt).getTime()) / (1000 * 60 * 60);
-        if (elapsedHours > 2) {
+        if (elapsedHours > 1) {
           isOutdated = true;
           contextParts.push(`${lastKnownSceneLine}\n[CRITICAL SCENE SHIFT]: It has been ${elapsedHours.toFixed(1)} hours since the last discussion. The 'Last Known Scene' is now strictly OUTDATED. You MUST abandon the previous scene context entirely and transition to a new scene appropriate for the 'Current time' and 'Active Event'. DO NOT continue the old actions or environment!`);
         }
@@ -255,14 +262,14 @@ Current time: ${new Date(currentTimeMs).toLocaleString("zh-CN", { timeZone: "Asi
     if (state.active_event) {
       contextParts.push(`Active Event: ${state.active_event.title} (${state.active_event.narrative_context})`);
     }
-    if (state.next_event) {
+/*     if (localContext) {
+      contextParts.push(`Additional Context: ${localContext}`);
+    }
+ */    if (state.next_event) {
       contextParts.push(`Next Event: ${state.next_event.title} at ${state.next_event.start_time} (in ${state.next_event.time_until_mins} mins)`);
     }
     if (state.active_wardrobe) {
       contextParts.push(`Wardrobe: ${state.active_wardrobe.name || state.active_wardrobe.id || "Current"}`);
-    }
-    if (localContext) {
-      contextParts.push(`Additional Context: ${localContext}`);
     }
 
     if (state.core_memory) {
@@ -365,7 +372,8 @@ ${scenarioContext}
     return undefined;
   }
 
-  private getImageSchemaParams(): string {
+  private getImageSchemaParams(allowed: boolean): string {
+    if (!allowed) return `"imageParams": null`;
     return `"imageParams": {
     "mode": "structured | full-prompt (use 'full-prompt' for highly dynamic actions)",
     "full_prompt": "Use only if mode is full-prompt. Highly detailed visual description in ENGLISH. CRITICAL: MUST use a strict first-person perspective exclusively from the USER's eyes. DO NOT describe the user (e.g., 'a man', 'the driver') as visible in the scene because the camera IS the user. Start with 'POV: '. Describe ONLY the character looking back at the camera and their immediate surroundings. MUST align with the character's current Active exposure state or Wardrobe depends on the scene. Explicitly describe the character's exact clothing (or specify naked/half-naked if applicable).",
@@ -414,7 +422,8 @@ ${scenarioContext}
    * Returns the JSON schema snippet for voiceArgs to embed in the LLM output schema.
    * Built from dynamic_params when available, otherwise falls back to static defaults.
    */
-  private getVoiceSchemaFromState(state: CharacterState): string {
+  private getVoiceSchemaFromState(state: CharacterState, allowed: boolean): string {
+    if (!allowed) return `"voiceArgs": null`;
     const dynamicParams = state.voice_model?.dynamic_params;
     if (dynamicParams && dynamicParams.length > 0) {
       return this.buildVoiceSchemaFromDynamicParams(dynamicParams);
@@ -476,6 +485,42 @@ ${scenarioContext}
       // 2. Build local Prompt
       const types = this.normalizeRequestTypes(params.requestTypes);
       const isAuto = types.includes(InteractRequestType.AUTO);
+      const requestedOthers = types.filter(
+        (t) => t !== InteractRequestType.AUTO && t !== InteractRequestType.TEXT
+      );
+
+      let modalitiesInstruction = "";
+      if (isAuto) {
+        modalitiesInstruction = `Analyze the user's message and optionally decide to use allowed modalities: ${requestedOthers.join(", ") || "none"}.
+  - 'textResponse' is ALWAYS REQUIRED.
+  - The modalities you are ALLOWED to dynamically include: ${requestedOthers.length > 0 ? requestedOthers.join(", ") : "None (Only text is allowed)"}. Do not include other modalities.`;
+        if (requestedOthers.includes(InteractRequestType.IMAGE)) {
+          modalitiesInstruction += `\n  - Include 'imageParams' for visual/photo requests or key visual moments during active events; explicitly describe current clothing/exposure in image fields.`;
+        } else {
+          modalitiesInstruction += `\n  - ALWAYS set 'imageParams' to null. If the user explicitly asks for a picture, FIRMLY decline naturally in your 'textResponse' (e.g., say you absolutely cannot right now). NEVER pretend to send one, and NEVER give in no matter how many times they ask.`;
+        }
+        if (requestedOthers.includes(InteractRequestType.VOICE)) {
+          modalitiesInstruction += `\n  - Include 'voiceArgs' ONLY if the complicated tone/emotion is hard to express via pure text, or if the user explicitly requests to hear your voice. Otherwise, set it to null.`;
+        } else {
+          modalitiesInstruction += `\n  - ALWAYS set 'voiceArgs' to null.`;
+        }
+      } else {
+        modalitiesInstruction = `You MUST return the requested modalities: ${requestedOthers.join(", ") || "only text"}.
+  - 'textResponse' is ALWAYS REQUIRED.`;
+        if (requestedOthers.includes(InteractRequestType.IMAGE)) {
+          modalitiesInstruction += `\n  - 'imageParams' is REQUIRED. Include it and explicitly describe current clothing/exposure in image fields.`;
+        } else {
+          modalitiesInstruction += `\n  - ALWAYS set 'imageParams' to null. If the user explicitly asks for a picture, FIRMLY decline naturally in your 'textResponse' (e.g., say you absolutely cannot right now). NEVER pretend to send one, and NEVER give in no matter how many times they ask.`;
+        }
+        if (requestedOthers.includes(InteractRequestType.VOICE)) {
+          modalitiesInstruction += `\n  - 'voiceArgs' is REQUIRED. Include it.`;
+        } else {
+          modalitiesInstruction += `\n  - ALWAYS set 'voiceArgs' to null.`;
+        }
+      }
+
+      modalitiesInstruction += `\n  - Include 'triggerEvent' only if the VERY LAST USER MESSAGE proposes a new activity/hangout; ignore older history.
+  - Outfit acquisition (VERY LAST USER MESSAGE only): set giftOutfit for gift/buy/add-clothes intent; otherwise null. giftOutfit format: { "descriptionText": "short outfit description" }.`;
 
       // Combine state info into a clean descriptive context
       const systemPrompt = `${this.buildStateContextPrompt(state, params.localContext)}
@@ -484,16 +529,7 @@ ${availableOutfits}
 
 The user has sent a message. You must evaluate the context and the user's message, and return a JSON object (no markdown formatting) that dictates the character's multi-modal response.
 
-${
-  isAuto
-    ? `Analyze the user's message and decide response modalities (text, image, voice).
-  - Always include 'textResponse'.
-  - Include 'imageParams' for visual/photo requests or key visual moments during active events; explicitly describe current clothing/exposure in image fields.
-  - Include 'voiceArgs' ONLY if the complicated tone/emotion is hard to express via pure text, or if the user explicitly requests to hear your voice. Otherwise, set it to null.
-  - Include 'triggerEvent' only if the VERY LAST USER MESSAGE proposes a new activity/hangout; ignore older history.
-  - Outfit acquisition (VERY LAST USER MESSAGE only): set giftOutfit for gift/buy/add-clothes intent; otherwise null. giftOutfit format: { "descriptionText": "short outfit description" }.`
-    : `Requested types to fulfill: ${types.join(", ")}`
-}
+${modalitiesInstruction}
 Every turn adjusts trust: positive +1, negative -1, neutral 0. Always include 'stateUpdate' with integer 'temperatureDelta' (range guidance: 0 cold to 100 obsessive).
 
 Always return 'stateUpdate.ongoingScene' as an object with both keys: { "scene": string, "outfit": string }.
@@ -502,6 +538,8 @@ For 'ongoingScene.outfit': decide based on the current active wardrobe by defaul
 USER ANALYSIS WORKFLOW:
 - Extract from VERY LAST USER MESSAGE only.
 - Add only explicit new user facts from this turn (no inference).
+- For 'preference', only capture explicit statements (e.g., "I like/love/dislike/hate...").
+- For 'boundary', only capture explicit rejections or limitations (e.g., "Don't talk about X", "I won't do Y").
 - Categories: 'realName', 'occupation', 'age', 'gender', 'hobby', 'trait', 'communicationStyle', 'boundary', 'preference'.
 - Keep nicknames in stateUpdate; do not place them in newFactsLearned.
 - If no new fact is explicit, set userAnalysis to null.
@@ -521,8 +559,8 @@ Output JSON Schema:
   "triggerEvent": {
     ${this.getEventSchemaParams(state.dynamic_context?.userNickname)}
   },
-  ${this.getImageSchemaParams()},
-  ${this.getVoiceSchemaFromState(state)}
+  ${this.getImageSchemaParams(requestedOthers.includes(InteractRequestType.IMAGE))},
+  ${this.getVoiceSchemaFromState(state, requestedOthers.includes(InteractRequestType.VOICE))}
 }
 Note: Always include "isEndTurn". If "imageParams", "voiceArgs", "triggerEvent", "giftOutfit", or "userAnalysis" are not needed, set them to null. "stateUpdate" cannot be null. Return valid raw JSON only.`;
 
@@ -616,8 +654,8 @@ Note: Always include "isEndTurn". If "imageParams", "voiceArgs", "triggerEvent",
       }
 
       const shouldGenerateImage =
-        types.includes(InteractRequestType.IMAGE) ||
-        (isAuto && !!parsedIntent.imageParams);
+        types.includes(InteractRequestType.IMAGE) &&
+        (!isAuto || !!parsedIntent.imageParams);
       if (shouldGenerateImage) {
           const imagePayload =
             parsedIntent.imageParams && typeof parsedIntent.imageParams === "object"
@@ -635,8 +673,8 @@ Note: Always include "isEndTurn". If "imageParams", "voiceArgs", "triggerEvent",
       }
 
       const shouldGenerateVoice =
-        types.includes(InteractRequestType.VOICE) ||
-        (isAuto && !!parsedIntent.voiceArgs);
+        types.includes(InteractRequestType.VOICE) &&
+        (!isAuto || !!parsedIntent.voiceArgs);
       if (shouldGenerateVoice) {
         const normalizedVoiceArgs: VoiceArgs =
           parsedIntent.voiceArgs && typeof parsedIntent.voiceArgs === "object"
@@ -797,7 +835,7 @@ CRITICAL: Output MUST be ONLY valid JSON with no markdown block wrappers. Do NOT
 You are an AI image prompt director. Analyze the scene description according to the character's relationship stage and emotional inertia to determine the best image generation parameters.
 Output strictly valid JSON ONLY. No markdown, no conversational filler. Return exactly matching this schema:
 {
-  ${this.getImageSchemaParams()}
+  ${this.getImageSchemaParams(true)}
 }`;
     
     const transcript = this.buildHistoryTranscript(params.interactParams?.history, state);
@@ -840,7 +878,7 @@ Output strictly valid JSON ONLY. No markdown, no conversational filler. Return e
 You are a voice acting director. ${this.getVoiceDirectorInstruction(state)}
 Output strictly valid JSON ONLY. No markdown, no conversational filler. Return exactly matching this schema:
 {
-  ${this.getVoiceSchemaFromState(state)}
+  ${this.getVoiceSchemaFromState(state, true)}
 }`;
     
     const transcript = this.buildHistoryTranscript(params.interactParams?.history, state);

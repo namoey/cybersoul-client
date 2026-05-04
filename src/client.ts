@@ -389,6 +389,19 @@ ${scenarioContext}
   }`;
   }
 
+
+  private getOutfitSelectionPrompt(): string {
+    return `When generating a triggerEvent, you MUST provide a suitable 'triggerEvent.outfitId' if the VERY LAST USER MESSAGE explicitly asks for an outfit change, OR if the new activity implies a context/location shift that conflicts with the current outfit (e.g., currently in SLEEPWEAR at home but going outside). Otherwise, keep it null. When changing outfits, match it to the event's activity, environment, and relationship stage (e.g., DAILY, INTIMATE, SLEEPWEAR).`;
+  }
+
+  private getTriggerEventPolicyPrompt(): string {
+    return `- Include 'triggerEvent' only if the VERY LAST USER MESSAGE proposes a new activity/hangout, explicitly requests an outfit change, or proposes intimate/romantic actions; ignore older history. ${this.getOutfitSelectionPrompt()}`;
+  }
+
+  private getOutfitAcquisitionPolicyPrompt(): string {
+    return `- Outfit acquisition (VERY LAST USER MESSAGE only): set giftOutfit for gift/buy/add-clothes intent; otherwise null. giftOutfit format: { "descriptionText": "short outfit description" }.`;
+  }
+
   private getEventSchemaParams(userName?: string): string {
     const name = userName || "the user";
     return `"eventTitle": "CRITICAL: Must include BOTH ‘WHAT to do’ AND ‘WITH WHOM’ (use the user's specific name if known, e.g., 'Having coffee with ${name}'). DO NOT use your own character name in the title! If you don't explicitly include WITH WHOM the event is by name, it is a hard failure.",
@@ -396,7 +409,7 @@ ${scenarioContext}
     "scheduledDateStr": "YYYY-MM-DD (Optional. If the user specifies a future date like 'tomorrow', 'Saturday', or 'next week', calculate the exact calendar date based on the 'Current time' provided in the context and output it here. Otherwise, return null)",
     "scheduledStartTimeStr": "HH:MM (Optional, 24-hour format if a specific time is agreed upon, e.g., '14:30', otherwise null)",
     "durationMins": 60,
-    "outfitId": "optional wardrobe ID to change into if appropriate. MUST match the context of the event (e.g. SLEEPWEAR for bed, INTIMATE for romance, DAILY for going out)"`;
+    "outfitId": "Wardrobe ID. Provide ONLY if the user explicitly requested an outfit change OR if the new activity conflicts with the current outfit context (e.g., SLEEPWEAR at home -> going outside). Otherwise, use null."`;
   }
 
   private getVoiceSchemaParams(): string {
@@ -519,8 +532,8 @@ ${scenarioContext}
         }
       }
 
-      modalitiesInstruction += `\n  - Include 'triggerEvent' only if the VERY LAST USER MESSAGE proposes a new activity/hangout; ignore older history.
-  - Outfit acquisition (VERY LAST USER MESSAGE only): set giftOutfit for gift/buy/add-clothes intent; otherwise null. giftOutfit format: { "descriptionText": "short outfit description" }.`;
+        modalitiesInstruction += `\n  ${this.getTriggerEventPolicyPrompt()}
+        ${this.getOutfitAcquisitionPolicyPrompt()}`;
 
       // Combine state info into a clean descriptive context
       const systemPrompt = `${this.buildStateContextPrompt(state, params.localContext)}
@@ -624,7 +637,7 @@ Note: Always include "isEndTurn". If "imageParams", "voiceArgs", "triggerEvent",
       let finalDurationSec: number | undefined = undefined;
 
       // Output Event Trigger
-      if (isAuto && parsedIntent.triggerEvent) {
+      if (parsedIntent.triggerEvent) {
         mediaTasks.push(
           this.apiFetch("/api/v1/cyber-soul/characters/ondemand-event", {
             method: "POST",
@@ -745,7 +758,7 @@ Note: Always include "isEndTurn". If "imageParams", "voiceArgs", "triggerEvent",
 The user proposes a new event for you to participate in: "${params.eventDescription}".
 Evaluate this based on your current state and relationship stage.
 Decide if you will accept the event, and whether it requires changing your outfit.
-When changing outfits, perfectly match the outfit to the event's activity, environment, and relationship stage. Consider the wardrobe category (e.g., DAILY, INTIMATE, SLEEPWEAR).
+${this.getOutfitSelectionPrompt()}
 
 Available Wardrobe Outfits:
 ${availableOutfits || "None available"}

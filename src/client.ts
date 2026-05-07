@@ -1249,6 +1249,7 @@ Your task is to merge the 'Current Core Memory' and 'Current User Codex' with 'N
 1. **Deduplicate & Consolidate:** Remove duplicate hobbies, traits, boundaries, and preferences. Combine related points into concise descriptors.
 2. **Update Facts:** If the new events contain updated basic info (like new realName, different occupation), update it. Otherwise keep the existing info.
 3. **Keep it Clean:** Maximum 15 items per array.
+4. **CRITICAL Anti-Destruction Rule:** NEVER use placeholder values like 'string'. If a fact is not mentioned and is absent from Current User Codex, OMIT the key entirely. If a fact ALREADY EXISTS in the Current User Codex, you MUST retain it in your output. DO NOT reset existing arrays or strings to empty.
 
 **Output Format**: MUST be valid JSON matching this schema:
 {
@@ -1267,15 +1268,15 @@ Your task is to merge the 'Current Core Memory' and 'Current User Codex' with 'N
   },
   "userCodex": {
     "basicInfo": {
-      "realName": "string",
-      "occupation": "string",
-      "age": "string",
-      "gender": "string"
+      "realName": "string (optional, omit if unknown)",
+      "occupation": "string (optional, omit if unknown)",
+      "age": "string (optional, omit if unknown)",
+      "gender": "string (optional, omit if unknown)"
     },
     "psychological": {
       "hobbies": ["string"],
       "traits": ["string"],
-      "communicationStyle": "string",
+      "communicationStyle": "string (optional, omit if unknown)",
       "boundaries": ["string"],
       "preferences": ["string"]
     }

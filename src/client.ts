@@ -1,6 +1,8 @@
 import {
   CyberSoulClientConfig,
   InteractParams,
+  ProactiveParams,
+  ProactiveResponse,
   OndemandEventParams,
   OndemandEventResponse,
   InteractRequestType,
@@ -213,6 +215,7 @@ export class CyberSoulClient {
   private buildStateContextPrompt(
     state: CharacterState,
     localContext?: string,
+    isProactive: boolean = false
   ): string {
     const dyn = state.dynamic_context || {};
     const stage = state.relationship_stage || "NEUTRAL";
@@ -262,10 +265,10 @@ Current time: ${new Date(currentTimeMs).toLocaleString("zh-CN", { timeZone: "Asi
     if (state.active_event) {
       contextParts.push(`Active Event: ${state.active_event.title} (${state.active_event.narrative_context})`);
     }
-/*     if (localContext) {
+    if (localContext) {
       contextParts.push(`Additional Context: ${localContext}`);
     }
- */    if (state.next_event) {
+    if (state.next_event) {
       contextParts.push(`Next Event: ${state.next_event.title} at ${state.next_event.start_time} (in ${state.next_event.time_until_mins} mins)`);
     }
     if (state.active_wardrobe) {
@@ -334,7 +337,9 @@ ${scenarioContext}
 2. IDENTITY VS MOOD: Familiarity determines what you know; Temperature determines how you feel. If Familiarity is high but Temperature is low, be distant and cold. Do not act warm just because you know them well.
 3. CONVERSATIONAL VERBOSITY: If Temperature is low (< 40) or Stage is STRANGER/COLD, keep answers brief and short. An angry or distant person does not write long paragraphs. Even when Temperature is high, ALWAYS mirror the user's verbosity. If the user sends a short message, reply with a proportionately short message (1-2 sentences). Do not monologize or write long paragraphs unless the user writes one first.
 4. EMOTIONAL INERTIA: React strictly according to current Temperature. Deflect sudden user affection if you are currently COLD. Mood shifts MUST be slow ('temperatureDelta' +/- 5 max per turn).
-5. REAL-TIME PACING: Write ONLY your immediate, split-second reaction to the user's exact last message. Do NOT narrate actions over a span of time (e.g., waiting, hearing steps, then walking to the door). Ensure everything happens in a single real-time moment.`;
+${isProactive 
+  ? "5. REAL-TIME PACING: You are initiating the conversation because the user hasn't replied recently. Transition naturally from your last message or start a new topic seamlessly. Ensure everything happens in a single real-time moment."
+  : "5. REAL-TIME PACING: Write ONLY your immediate, split-second reaction to the user's exact last message. Do NOT narrate actions over a span of time (e.g., waiting, hearing steps, then walking to the door). Ensure everything happens in a single real-time moment."}`;
   }
 
   private normalizeOngoingSceneState(
@@ -679,9 +684,14 @@ Note: Always include "isEndTurn". If "imageParams", "voiceArgs", "triggerEvent",
                 };
 
         mediaTasks.push(
-            this.generatePrimitive("image", imagePayload).then((res: any) => {
-            finalImageUrl = res.image_url;
-          }).catch(e => console.error("[CyberSoulClient] Image generation failed:", e))
+          this.generatePrimitive("image", imagePayload)
+            .then((res: any) => {
+              finalImageUrl = res.image_url;
+            })
+            .catch((e: any) => {
+              console.error("[CyberSoulClient] Image generation failed:", e);
+              if (e.code === 'INSUFFICIENT_POINTS' || e.code === 'WALLET_DEDUCTION_ERROR') throw e;
+            })
         );
       }
 
@@ -709,10 +719,15 @@ Note: Always include "isEndTurn". If "imageParams", "voiceArgs", "triggerEvent",
           this.generatePrimitive("voice", {
             text: textForVoice,
             dynamicArgs: normalizedVoiceArgs,
-          }).then((res: any) => {
-            finalAudioUrl = res.audio_url;
-            finalDurationSec = res.duration_sec;
-          }).catch(e => console.error("[CyberSoulClient] Voice generation failed:", e))
+          })
+            .then((res: any) => {
+              finalAudioUrl = res.audio_url;
+              finalDurationSec = res.duration_sec;
+            })
+            .catch((e: any) => {
+              console.error("[CyberSoulClient] Voice generation failed:", e);
+              if (e.code === 'INSUFFICIENT_POINTS' || e.code === 'WALLET_DEDUCTION_ERROR') throw e;
+            })
         );
       }
 
@@ -832,6 +847,150 @@ CRITICAL: Output MUST be ONLY valid JSON with no markdown block wrappers. Do NOT
         status: "error",
         error: error.message,
       };
+    }
+  }
+
+  /**
+   * Generates a proactive message when the user hasn't responded.
+   * Safely prevents spamming, and adjusts its approach based on relationship dynamics.
+   */
+  public async proactiveInteract(params: ProactiveParams): Promise<ProactiveResponse> {
+    try {
+      // 1. Cold Interaction Protection (Logic-based fallback)
+      const history = params.history || [];
+      const maxUnreplied = params.maxUnreplied ?? 2;
+      
+      let consecutiveProactive = 0;
+      // Start from the most recent message
+      for (let i = history.length - 1; i >= 0; i--) {
+        const msg = history[i];
+        if (msg.role === 'user') {
+            break; // User responded, streak broken
+        }
+        if (msg.role === 'assistant') {
+            consecutiveProactive++;
+        }
+      }
+
+      if (consecutiveProactive >= maxUnreplied) {
+        return { 
+            status: "skipped", 
+            reason: `User is busy. ${consecutiveProactive} consecutive proactive messages ignored.` 
+        };
+      }
+
+      // 2. Fetch current character state
+      const [state, availableOutfits] = await Promise.all([
+        this.fetchRemoteState(),
+        this.getWardrobePromptStr()
+      ]);
+
+      // 3. Evaluate behavioral approach based on relationship and personality
+      const dyn = state.dynamic_context || {};
+      const stage = state.relationship_stage || "ACQUAINTANCE";
+      const temperature = dyn.temperature ?? 50;
+      const userTraits = state.user_codex?.psychological?.traits?.join(", ") || "";
+
+      let interrogationStrategy = "Do not ask 'are you there?' or 'why aren't you answering?'. Just share your current status, a passing thought, complain whimsically, or tease the user naturally like a real partner.";
+      
+      if (stage === "INTIMATE" || stage === "PARTNER" || (stage === "WARM" && temperature > 70)) {
+        if (temperature > 70) {
+            interrogationStrategy = "Because you are deeply intimate and highly affectionate, you MISS them. You MAY organically 'interrogate' or pout playfully about why they are ignoring you (e.g., 'Are you too busy for me?', 'Still ignoring your girl?'). Act like a real, slightly needy/attached partner.";
+        } else if (temperature < 40) {
+            interrogationStrategy = "Because you are intimate but currently feeling cold/angry, you notice they are ignoring you. You MAY be passive-aggressive or cross-examine them coldly (e.g., 'So we're just not talking today?', 'Fine, keep ignoring me.').";
+        }
+      } else if (stage === "COLD" || stage === "STRANGER") {
+         interrogationStrategy = "You are distant. Do NOT double-text with neediness. If you must speak, make it a detached observation or a cold administrative remark.";
+      }
+
+      // History/Context awareness prompt
+      const historyAwarenessPrompt = `CRITICAL CONTEXT AWARENESS: Read the CHAT HISTORY above carefully. Remember that YOU sent the last message. Your new message MUST feel organically connected to the flow of what you two were previously talking about, or naturally bring up a known event/topic from your [CORE MEMORY]. Do not sound like a robot reading a log.`;
+
+      // 4. Build a Proactive-specific System Prompt
+      const baseContext = this.buildStateContextPrompt(state, params.localContext, true);
+      const types = this.normalizeRequestTypes(params.requestTypes);
+      const isAuto = types.includes(InteractRequestType.AUTO);
+      const requestedOthers = types.filter(
+        (t) => t !== InteractRequestType.AUTO && t !== InteractRequestType.TEXT
+      );
+      
+      // Determine modalities (reusing logic from interact)
+      let modalitiesInstruction = "You are initiating conversation without a preceding user message.\\n";
+      if (requestedOthers.includes(InteractRequestType.IMAGE)) {
+        modalitiesInstruction += "  - Include 'imageParams' for visual/photo requests or key visual moments; explicitly describe current clothing.\\n";
+      } else {
+        modalitiesInstruction += "  - ALWAYS set 'imageParams' to null.\\n";
+      }
+
+      const systemPrompt = `${baseContext}
+
+[PROACTIVE INITIATION TASK]
+The user has NOT spoken to you recently. You sent the last message in the chat history, and they haven't replied. You are deciding to follow up proactively.
+${interrogationStrategy}
+${historyAwarenessPrompt}
+Consider the user's known traits (${userTraits}) when choosing how to act. Need to keep it strictly under 2-3 sentences max.
+
+Available Wardrobe Outfits:
+${availableOutfits}
+
+${modalitiesInstruction}
+You MUST output ONLY a valid JSON object matching exactly this structure:
+{
+  "actionText": "(Scene descriptions, physical actions, expressions, inner feelings) ONLY.",
+  "textResponse": "Spoken dialogue ONLY.",
+  "stateUpdate": { "temperatureDelta": 1, "ongoingScene": { "scene": "...", "outfit": "..." } },
+  ${this.getImageSchemaParams(requestedOthers.includes(InteractRequestType.IMAGE))},
+  "voiceArgs": null
+}`;
+
+      const transcript = this.buildHistoryTranscript(params.history, state);
+
+      const promptMessages = [
+        { role: "system", content: systemPrompt },
+        {
+          role: "user",
+          content: `${transcript}\n[TRIGGER PROACTIVE MESSAGE]\nBased on your active event and environment, send a new message to the user.\n\nCRITICAL: Output ONLY valid JSON matching the schema. DO NOT wrap the JSON in \`\`\`json.`
+        }
+      ];
+
+      // 5. Generate with LLM using a confident temperature
+      const rawLlmResponse = await this.llm.generate(promptMessages, 800, 0.7);
+      
+      let parsedIntent: DispatcherIntent;
+      try {
+        parsedIntent = robustJsonParse<DispatcherIntent>(rawLlmResponse, "Proactive fallback");
+      } catch (e) {
+        parsedIntent = { textResponse: rawLlmResponse.replace(/^[\`\s]+|[\`\s]+$/g, "").trim() };
+      }
+
+      // Update Remote state if needed
+      if (parsedIntent.stateUpdate) {
+        this._updateDynamicContextInternal(parsedIntent.stateUpdate).catch(e => console.error(e));
+      }
+      
+      // Handle Optional Media (Image only for proactive to save compute normally, but you can extend)
+      let finalImageUrl: string | undefined = undefined;
+      if (requestedOthers.includes(InteractRequestType.IMAGE) || !!parsedIntent.imageParams) {
+          const imagePayload = parsedIntent.imageParams || { mode: "full-prompt", full_prompt: parsedIntent.textResponse };
+          try {
+             const res = await this.generatePrimitive("image", imagePayload);
+             finalImageUrl = res.image_url;
+          } catch(e) {
+             console.error("[CyberSoulClient] Proactive Image generation failed:", e);
+          }
+      }
+
+      return {
+        status: "success",
+        textResponse: parsedIntent.textResponse,
+        actionText: parsedIntent.actionText,
+        imageUrl: finalImageUrl,
+        stateUpdate: parsedIntent.stateUpdate
+      };
+
+    } catch (error: any) {
+      console.error("[CyberSoulClient] Proactive Interact Error: ", error);
+      return { status: "error", error: error.message };
     }
   }
 

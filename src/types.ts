@@ -24,6 +24,25 @@ export interface HistoryEntry {
   content: string;
   actionText?: string;
   mediaHint?: string;
+  isProactive?: boolean;
+}
+
+export interface ProactiveParams {
+  history?: HistoryEntry[];
+  maxUnreplied?: number;
+  requestTypes?: InteractRequestType[];
+  localContext?: string;
+}
+
+export interface ProactiveResponse {
+  status: "success" | "skipped" | "error";
+  reason?: string;
+  textResponse?: string;
+  actionText?: string;
+  imageUrl?: string;
+  audioUrl?: string;
+  stateUpdate?: DispatcherIntent["stateUpdate"];
+  error?: string;
 }
 
 export interface InteractParams {

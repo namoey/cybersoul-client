@@ -1,13 +1,14 @@
-export interface LLMConfig {
-  provider: "minimax";
+export interface GenericLLMConfig {
+  provider: string;
   apiKey: string;
   model: string;
+  customSettings?: Record<string, any>;
 }
 
 export interface CyberSoulClientConfig {
   characterKey: string;
   backendUrl: string;
-  llmConfig: LLMConfig;
+  llmConfig: GenericLLMConfig;
   requestTimeoutMs?: number;
   maxRetries?: number;
 }
@@ -70,10 +71,22 @@ export interface OndemandEventResponse {
   error?: string;
 }
 
+export enum WardrobeCategory {
+  CASUAL = 'CASUAL',
+  FORMAL = 'FORMAL',
+  WORKWEAR = 'WORKWEAR',
+  SPORTSWEAR = 'SPORTSWEAR',
+  SWIMWEAR = 'SWIMWEAR',
+  COSTUME = 'COSTUME',
+  SLEEPWEAR = 'SLEEPWEAR',
+  INTIMATE = 'INTIMATE',
+  DAILY = 'DAILY',
+}
+
 export interface WardrobeItem {
   id: string;
   itemName: string;
-  category: string;
+  category: WardrobeCategory;
   promptModifier: string;
 }
 

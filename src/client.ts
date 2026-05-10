@@ -19,7 +19,7 @@ import {
   OngoingSceneState,
 } from "./types.js";
 import { robustJsonParse } from "./utils/json.utils.js";
-import { MinimaxProvider } from "./providers/minimax.provider.js";
+import { GenericLLMProvider } from "./llm.provider.js";
 
 export class CyberSoulClient {
   private config: CyberSoulClientConfig;
@@ -35,11 +35,11 @@ export class CyberSoulClient {
     this.maxRetries = Math.max(0, config.maxRetries ?? 1);
 
     // Setup Provider
-    if (config.llmConfig.provider === "minimax") {
-      this.llm = new MinimaxProvider(config.llmConfig);
-    } else {
-      throw new Error(`Unsupported LLM provider: ${config.llmConfig.provider}`);
-    }
+    this.llm = new GenericLLMProvider(
+      config.llmConfig,
+      config.backendUrl,
+      config.characterKey
+    );
   }
 
   /**
@@ -396,7 +396,7 @@ ${isProactive
 
 
   private getOutfitSelectionPrompt(): string {
-    return `When generating a triggerEvent, you MUST provide a suitable 'triggerEvent.outfitId' if the VERY LAST USER MESSAGE explicitly asks for an outfit change, OR if the new activity implies a context/location shift that conflicts with the current outfit (e.g., currently in SLEEPWEAR at home but going outside). Otherwise, keep it null. When changing outfits, match it to the event's activity, environment, and relationship stage (e.g., DAILY, INTIMATE, SLEEPWEAR).`;
+    return `When generating a triggerEvent, you MUST provide a suitable 'triggerEvent.outfitId' if the VERY LAST USER MESSAGE explicitly asks for an outfit change, OR if the new activity implies a context/location shift that conflicts with the current outfit (e.g., currently in SLEEPWEAR at home but going outside). Otherwise, keep it null. When changing outfits, match it to the event's activity, environment, and relationship stage (e.g., CASUAL, COSTUME, INTIMATE, SLEEPWEAR, etc.).`;
   }
 
   private getTriggerEventPolicyPrompt(): string {
@@ -513,7 +513,7 @@ ${isProactive
   - 'textResponse' is ALWAYS REQUIRED.
   - The modalities you are ALLOWED to dynamically include: ${requestedOthers.length > 0 ? requestedOthers.join(", ") : "None (Only text is allowed)"}. Do not include other modalities.`;
         if (requestedOthers.includes(InteractRequestType.IMAGE)) {
-          modalitiesInstruction += `\n  - Include 'imageParams' for visual/photo requests or key visual moments during active events; explicitly describe current clothing/exposure in image fields.`;
+          modalitiesInstruction += `\n  - Include 'imageParams' for visual/photo requests or key visual moments during active events; explicitly describe current clothing/exposure in image fields. CRITICAL POLICY: Guard your privacy! If the user feels like a stranger (low Familiarity) AND your Mood/Temperature is cool/distant (< 50), ALWAYS set 'imageParams' to null and naturally decline. If your Temperature is warm/high (>= 50), you may choose to share a picture if requested or if it fits naturally, even if you just met.`;
         } else {
           modalitiesInstruction += `\n  - ALWAYS set 'imageParams' to null. If the user explicitly asks for a picture, FIRMLY decline naturally in your 'textResponse' (e.g., say you absolutely cannot right now). NEVER pretend to send one, and NEVER give in no matter how many times they ask.`;
         }
@@ -917,7 +917,7 @@ CRITICAL: Output MUST be ONLY valid JSON with no markdown block wrappers. Do NOT
       // Determine modalities (reusing logic from interact)
       let modalitiesInstruction = "You are initiating conversation without a preceding user message.\\n";
       if (requestedOthers.includes(InteractRequestType.IMAGE)) {
-        modalitiesInstruction += "  - Include 'imageParams' for visual/photo requests or key visual moments; explicitly describe current clothing.\\n";
+        modalitiesInstruction += "  - Include 'imageParams' for visual/photo moments. CRITICAL POLICY: NEVER send pictures to strangers! If Stage is STRANGER or COLD, or Familiarity is very low (< 10), ALWAYS set 'imageParams' to null.\\n";
       } else {
         modalitiesInstruction += "  - ALWAYS set 'imageParams' to null.\\n";
       }

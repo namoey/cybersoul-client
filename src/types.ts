@@ -96,6 +96,7 @@ export interface InteractResponse {
   actionText?: string;
   imageUrl?: string;
   audioUrl?: string;
+  likePreviousPicture?: boolean;
   durationSec?: number;
   triggeredEvent?: {
     eventTitle?: string;
@@ -118,6 +119,7 @@ export interface DispatcherIntent {
   textResponse?: string;
   actionText?: string;
   imageParams?: any;
+  likePreviousPicture?: boolean;
   voiceArgs?: VoiceArgs | null;
   giftOutfit?: {
     descriptionText: string;
@@ -316,4 +318,10 @@ export interface ICharacterProfile {
   visualModelId?: string;
   visualCustomConfig?: Record<string, Record<string, unknown>>;
   [key: string]: unknown; // Allow other properties to exist without breaking SDK clients that don't need them fully defined
+}
+
+export interface LikedPicture {
+  url: string;
+  date: string;
+  mediaId?: string;
 }

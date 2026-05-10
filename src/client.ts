@@ -17,6 +17,7 @@ import {
   WardrobeItem,
   HistoryEntry,
   OngoingSceneState,
+  LikedPicture,
 } from "./types.js";
 import { robustJsonParse } from "./utils/json.utils.js";
 import { GenericLLMProvider } from "./llm.provider.js";
@@ -564,12 +565,15 @@ USER ANALYSIS WORKFLOW:
 
 For 'isEndTurn', use true only when the interaction naturally concludes (confirmation/bye, event ending, or clear hard scene shift); otherwise false.
 
+If the user explicitly praises, loves, or stars the VERY LAST picture you sent (not general appearance, but the recent photo itself), set 'likePreviousPicture' to true in the JSON, otherwise false.
+
 Voice direction for voiceArgs: ${this.getVoiceDirectorInstruction(state)}
 
 Output JSON Schema:
 {
   "actionText": "(Scene descriptions, physical actions, expressions, inner feelings) ONLY. Never include spoken dialogue here.",
   "textResponse": "Spoken dialogue ONLY. Never include actions or parentheses.",
+  "likePreviousPicture": false,
   "stateUpdate": { "temperatureDelta": 1, "userNickname": "How character addresses user", "agentNickname": "How user addresses character", "talkingStyle": "Current speaking style", "ongoingScene": { "scene": "Current physical scene/activity", "outfit": "Current outfit wording; use 'naked' when applicable" } },
   "giftOutfit": { "descriptionText": "Concise description of the newly acquired outfit to add into wardrobe." },
   "userAnalysis": { "newFactsLearned": [{ "category": "realName|occupation|age|gender|hobby|trait|communicationStyle|boundary|preference", "value": "explicit new user fact from VERY LAST USER MESSAGE" }] },
@@ -740,6 +744,7 @@ Note: Always include "isEndTurn". If "imageParams", "voiceArgs", "triggerEvent",
         actionText: parsedIntent.actionText || "",
         imageUrl: finalImageUrl,
         audioUrl: finalAudioUrl,
+        likePreviousPicture: parsedIntent.likePreviousPicture,
         durationSec: finalDurationSec,
         triggeredEvent: parsedIntent.triggerEvent || undefined,
         stateUpdate: parsedIntent.stateUpdate,
@@ -1195,13 +1200,14 @@ Output requirements:
   /**
    * Save the recent story moment to the character's backend database to be picked up by the core memory consolidation.
    */
-  public async saveMoment(summary: string, date: string, time: string): Promise<void> {
+  public async saveMoment(summary: string, date: string, time: string, likedPictures?: LikedPicture[]): Promise<void> {
     const res = await this.apiFetch("/api/v1/cyber-soul/characters/moments", {
       method: "POST",
       body: JSON.stringify({
         summary,
         date,
         time,
+        likedPictures,
       }),
     });
     if (!res.ok) {

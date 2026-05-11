@@ -245,7 +245,7 @@ Current time: ${new Date(currentTimeMs).toLocaleString("zh-CN", { timeZone: "Asi
 
     const ongoingScene = this.normalizeOngoingSceneState(
       dyn.ongoingScene,
-      state.active_wardrobe?.name || state.active_wardrobe?.id,
+      state.active_wardrobe?.itemName,
     );
 
     if (ongoingScene) {
@@ -274,7 +274,7 @@ Current time: ${new Date(currentTimeMs).toLocaleString("zh-CN", { timeZone: "Asi
       contextParts.push(`Next Event: ${state.next_event.title} at ${state.next_event.start_time} (in ${state.next_event.time_until_mins} mins)`);
     }
     if (state.active_wardrobe) {
-      contextParts.push(`Wardrobe: ${state.active_wardrobe.name || state.active_wardrobe.id || "Current"}`);
+      contextParts.push(`Wardrobe: ${state.active_wardrobe.itemName || "Current"}`);
     }
 
     if (state.core_memory) {

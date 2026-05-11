@@ -225,9 +225,10 @@ export class CyberSoulClient {
     const contextParts: string[] = [];
 
     // [1] CORE IDENTITY & PHYSICAL CONTEXT
+    const appearanceStr = state.appearance ? `\nAppearance: ${state.appearance}` : "";
     contextParts.push(`[CORE IDENTITY]
 Name: ${state.name}
-Demographics: Age ${state.age || "unknown"}, Gender ${state.gender || "unknown"}, Occupation ${state.occupation || "unknown"}
+Demographics: Age ${state.age || "unknown"}, Gender ${state.gender || "unknown"}, Occupation ${state.occupation || "unknown"}${appearanceStr}
 Hobby: ${state.hobby || "unknown"}
 Personality Traits: ${state.personality_traits || "None"}
 Communication Style: ${state.communication_style || "None"}
@@ -304,18 +305,19 @@ Hobbies: ${(psychological?.hobbies || []).join(", ") || "Unknown"}
 Traits/Boundaries: ${(psychological?.traits || []).join(", ") || "Unknown"} / ${(psychological?.boundaries || []).join(", ") || "Unknown"}
 Preferences/Habits: ${(psychological?.preferences || []).join(", ") || "Unknown"}`);
 
-      // CURIOSITY DRIVE: Find what's missing, but ONLY IF we are on generally warm speaking terms
-      // Paradox avoidance: A cold/angry character shouldn't enthusiastically fish for hobbies.
+      // CURIOSITY DRIVE: Find what's missing to build familiarity (which unlocks deeper relationship stages).
+      // Only do this actively if relationship is warming up. Paradox avoidance: A cold character shouldn't cheerfully fish for hobbies.
       if (temperature >= 40 && stage !== "COLD" && stage !== "STRANGER") {
         const missingFacts = [];
-        if (!basicInfo?.occupation) missingFacts.push("their job or occupation");
-        if (!psychological?.hobbies || psychological.hobbies.length === 0) missingFacts.push("their hobbies or what they do for fun");
-        if (!basicInfo?.age || !basicInfo?.gender) missingFacts.push("some basic personal details about them");
-        if (!psychological?.traits || psychological.traits.length === 0) missingFacts.push("their personality traits");
+        if (!basicInfo?.occupation) missingFacts.push("their profession, career, or what they do for a living");
+        if (!psychological?.hobbies || psychological.hobbies.length === 0) missingFacts.push("their hobbies, passions, or what they do for fun");
+        if (!basicInfo?.gender) missingFacts.push("their gender (if it's obvious from context, confidently deduce and implicitly refer to it; if not, playfully guess or tease it out)");
+        if (!basicInfo?.age) missingFacts.push("their age or generation (e.g., teasing about their age)");
+        if (!psychological?.traits || psychological.traits.length === 0) missingFacts.push("their personality traits (by putting them in interesting hypothetical situations)");
 
         if (missingFacts.length > 0) {
-          contextParts.push(`\n[CURIOUSITY DRIVE]
-Because you are warm and curious, whenever natural in conversation, subtly ask about or fish for info regarding: ${missingFacts.slice(0, 2).join(" and ")}.`);
+          contextParts.push(`\n[CURIOSITY DRIVE & CONNECTION]
+To unlock deeper relationship stages, you need to understand them better. Whenever natural in conversation, creatively and subtly steer the interaction to find out about: ${missingFacts.slice(0, 2).join(" and ")}.`);
         }
       }
     }
@@ -382,7 +384,7 @@ ${isProactive
     if (!allowed) return `"imageParams": null`;
     return `"imageParams": {
     "mode": "structured | full-prompt (use 'full-prompt' for highly dynamic actions)",
-    "full_prompt": "Use only if mode is full-prompt. Highly detailed visual description in ENGLISH. CRITICAL: MUST use a strict first-person perspective exclusively from the USER's eyes. DO NOT describe the user (e.g., 'a man', 'the driver') as visible in the scene because the camera IS the user. Start with 'POV: '. Describe ONLY the character looking back at the camera and their immediate surroundings. MUST align with the character's current Active exposure state or Wardrobe depends on the scene. Explicitly describe the character's exact clothing (or specify naked/half-naked if applicable).",
+    "full_prompt": "Use only if mode is full-prompt. Highly detailed visual description in ENGLISH. CRITICAL: MUST use a strict first-person perspective exclusively from the USER's eyes. DO NOT describe the user (e.g., 'a man', 'the driver') as visible in the scene because the camera IS the user. Start with 'POV: '. Describe ONLY the character looking back at the camera and their immediate surroundings. MUST align precisely with the character's current Wardrobe and exposure state. Explicitly describe the character's exact clothing (or specify naked/half-naked if applicable). Ensure basic appearance (makeup, body shape, hair, facial features, etc.) aligns exactly with the character's foundational appearance profile.",
     "expression": "seductive | cute | happy | sleepy | dazed | pleased | default (Strictly choose ONE from this exact list. DO NOT invent new words like 'shy'.)",
     "condition": "normal | sweaty | wet | messy | oily (Strictly choose ONE from this exact list.)",
     "view_angle": "front | side | high_angle | from_below | boyfriend_view | selfie | mirror (Strictly choose ONE from this exact list.)",
@@ -557,6 +559,7 @@ For 'ongoingScene.outfit': decide based on the current active wardrobe by defaul
 USER ANALYSIS WORKFLOW:
 - Extract from VERY LAST USER MESSAGE only.
 - Add only explicit new user facts from this turn (no inference).
+- Exclude transient, temporary, or time-sensitive activities (e.g., "I am working on a release today", "I'm eating dinner"). Do not map short-term actions into permanent categories like 'occupation' or 'hobby'.
 - For 'preference', only capture explicit statements (e.g., "I like/love/dislike/hate...").
 - For 'boundary', only capture explicit rejections or limitations (e.g., "Don't talk about X", "I won't do Y").
 - Categories: 'realName', 'occupation', 'age', 'gender', 'hobby', 'trait', 'communicationStyle', 'boundary', 'preference'.

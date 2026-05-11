@@ -244,6 +244,7 @@ export interface CharacterState {
   occupation?: string;
   hobby?: string;
   personality_traits?: string;
+  appearance?: string;
   interaction_boundaries?: string;
   communication_style?: string;
   user_codex?: UserCodex;

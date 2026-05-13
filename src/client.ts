@@ -384,10 +384,10 @@ ${isProactive
     if (!allowed) return `"imageParams": null`;
     return `"imageParams": {
     "mode": "structured | full-prompt (use 'full-prompt' for highly dynamic actions)",
-    "full_prompt": "Use only if mode is full-prompt. Highly detailed visual description in ENGLISH. CRITICAL: MUST use a strict first-person perspective exclusively from the USER's eyes. DO NOT describe the user (e.g., 'a man', 'the driver') as visible in the scene because the camera IS the user. Start with 'POV: '. Describe ONLY the character looking back at the camera and their immediate surroundings. MUST align precisely with the character's current Wardrobe and exposure state. Explicitly describe the character's exact clothing (or specify naked/half-naked if applicable). Ensure basic appearance (makeup, body shape, hair, facial features, etc.) aligns exactly with the character's foundational appearance profile.",
+    "full_prompt": "Use only if mode is full-prompt. Highly detailed visual description in ENGLISH. CRITICAL RULE FOR PERSPECTIVE: If you are physically separated from the user, simulate a selfie. However, absolutely DO NOT use the words 'selfie', 'phone', 'camera', 'lens', or 'holding' in this prompt (unless taking a mirror selfie). NEVER try to use negative prompting like 'no phone visible', as simply writing the word 'phone' forces image models to mistakenly draw a phone or phone border! Instead, achieve the natural selfie look using pure composition descriptions (e.g., 'intimate portrait looking directly at the viewer', 'high-angle portrait leaning forward', or 'wide portrait with one arm reaching out of the frame'). Vary the framing distance and angle to match the mood. If you are physically together with the user, the image MUST be a strict first-person perspective exclusively from the USER's eyes (start with 'POV: '). NEVER mix perspectives together. DO NOT describe the user (e.g., 'a man', 'the driver') as visible in the scene because the view IS the user. Describe ONLY the character looking back and their immediate surroundings. MUST align precisely with the character's current Wardrobe and exposure state. Explicitly describe the character's exact clothing (or specify naked/half-naked if applicable). Ensure basic appearance (makeup, body shape, hair, facial features, etc.) aligns exactly with the character's foundational appearance profile.",
     "expression": "seductive | cute | happy | sleepy | dazed | pleased | default (Strictly choose ONE from this exact list. DO NOT invent new words like 'shy'.)",
     "condition": "normal | sweaty | wet | messy | oily (Strictly choose ONE from this exact list.)",
-    "view_angle": "front | side | high_angle | from_below | boyfriend_view | selfie | mirror (Strictly choose ONE from this exact list.)",
+    "view_angle": "front | side | high_angle | from_below | boyfriend_view | selfie | mirror (Strictly choose ONE from this exact list. Use 'selfie' if physically separated from the user, otherwise use POV angles like 'boyfriend_view' or 'front' if together.)",
     "exposure": "normal | cleavage | see_through | half_naked | naked | intimate (Strictly choose ONE from this exact list. Explicitly choose naked or half_naked if the active scene takes off outfit.)",
     "pose": "e.g., sitting on bed, leaning forward (ENGLISH ONLY)",
     "scene": "e.g., cozy bedroom, morning light (ENGLISH ONLY)",
@@ -521,7 +521,12 @@ ${isProactive
           modalitiesInstruction += `\n  - ALWAYS set 'imageParams' to null. If the user explicitly asks for a picture, FIRMLY decline naturally in your 'textResponse' (e.g., say you absolutely cannot right now). NEVER pretend to send one, and NEVER give in no matter how many times they ask.`;
         }
         if (requestedOthers.includes(InteractRequestType.VOICE)) {
-          modalitiesInstruction += `\n  - Include 'voiceArgs' ONLY if the complicated tone/emotion is hard to express via pure text, or if the user explicitly requests to hear your voice. Otherwise, set it to null.`;
+          modalitiesInstruction += `\n  - 'voiceArgs' should be used sparingly to act like a real human. Include it ONLY IF AT LEAST ONE of the following is true:
+    1. The response is a long text that would be tedious to type out in real life.
+    2. The user explicitly requests a voice message.
+    3. Your current scheduled event or action makes texting inconvenient (e.g., driving, cooking, showering).
+    4. You are experiencing complicated moods or emotions that are difficult to convey accurately via pure text.
+    Otherwise, ALWAYS set 'voiceArgs' to null.`;
         } else {
           modalitiesInstruction += `\n  - ALWAYS set 'voiceArgs' to null.`;
         }
@@ -639,8 +644,14 @@ Note: Always include "isEndTurn". If "imageParams", "voiceArgs", "triggerEvent",
 
         // Fire text ready callback if provided
         if (params.onTextReady && (resolvedTextResponse || parsedIntent.actionText)) {
-          params.onTextReady(resolvedTextResponse, parsedIntent.actionText);
-      }
+          params.onTextReady(resolvedTextResponse, parsedIntent.actionText, {
+            stateUpdate: parsedIntent.stateUpdate,
+            userAnalysis: parsedIntent.userAnalysis,
+            isEndTurn: parsedIntent.isEndTurn,
+            triggerEvent: parsedIntent.triggerEvent,
+            likePreviousPicture: parsedIntent.likePreviousPicture,
+          });
+        }
 
       // 5. Build Final Media Calls parallel
       const mediaTasks = [];
@@ -974,6 +985,23 @@ You MUST output ONLY a valid JSON object matching exactly this structure:
       // Update Remote state if needed
       if (parsedIntent.stateUpdate) {
         this._updateDynamicContextInternal(parsedIntent.stateUpdate).catch(e => console.error(e));
+      }
+
+      const resolvedTextResponse =
+        typeof parsedIntent.textResponse === "string" &&
+        parsedIntent.textResponse.trim().length > 0
+          ? parsedIntent.textResponse
+          : "...";
+
+      // Fire text ready callback if provided
+      if (params.onTextReady && (resolvedTextResponse || parsedIntent.actionText)) {
+        params.onTextReady(resolvedTextResponse, parsedIntent.actionText, {
+          stateUpdate: parsedIntent.stateUpdate,
+          userAnalysis: parsedIntent.userAnalysis,
+          isEndTurn: parsedIntent.isEndTurn,
+          triggerEvent: parsedIntent.triggerEvent,
+          likePreviousPicture: parsedIntent.likePreviousPicture,
+        });
       }
       
       // Handle Optional Media (Image only for proactive to save compute normally, but you can extend)

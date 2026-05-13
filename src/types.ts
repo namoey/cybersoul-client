@@ -28,11 +28,20 @@ export interface HistoryEntry {
   isProactive?: boolean;
 }
 
+export interface InteractMetadata {
+  stateUpdate?: DispatcherIntent["stateUpdate"];
+  userAnalysis?: DispatcherIntent["userAnalysis"];
+  isEndTurn?: boolean;
+  triggerEvent?: DispatcherIntent["triggerEvent"];
+  likePreviousPicture?: boolean;
+}
+
 export interface ProactiveParams {
   history?: HistoryEntry[];
   maxUnreplied?: number;
   requestTypes?: InteractRequestType[];
   localContext?: string;
+  onTextReady?: (textResponse: string, actionText?: string, metadata?: InteractMetadata) => void;
 }
 
 export interface ProactiveResponse {
@@ -51,7 +60,7 @@ export interface InteractParams {
   localContext?: string;
   requestTypes?: InteractRequestType[];
   history?: HistoryEntry[];
-  onTextReady?: (textResponse: string, actionText?: string) => void;
+  onTextReady?: (textResponse: string, actionText?: string, metadata?: InteractMetadata) => void;
 }
 
 export interface OndemandEventParams {

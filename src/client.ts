@@ -249,18 +249,34 @@ Current time: ${new Date(currentTimeMs).toLocaleString("zh-CN", { timeZone: "Asi
     );
 
     if (ongoingScene) {
-      const lastKnownSceneLine = `Last Known Scene: ${ongoingScene.scene} | Outfit: ${ongoingScene.outfit}`;
+      const scenePrefix = "Last Known Scene";
+      let timeAgoStr = scenePrefix;
       let isOutdated = false;
+      let elapsedHours = 0;
+      
       if (dyn.lastInteractionAt) {
-        const elapsedHours = (currentTimeMs - new Date(dyn.lastInteractionAt).getTime()) / (1000 * 60 * 60);
+        const elapsedMs = currentTimeMs - new Date(dyn.lastInteractionAt).getTime();
+        const elapsedMins = Math.max(0, elapsedMs / (1000 * 60));
+        elapsedHours = elapsedMins / 60;
+        const elapsedDays = elapsedHours / 24;
+        const elapsedYears = elapsedDays / 365;
+
+        if (elapsedYears >= 1) timeAgoStr = `${scenePrefix} ${elapsedYears.toFixed(1)} years ago`;
+        else if (elapsedDays >= 1) timeAgoStr = `${scenePrefix} ${elapsedDays.toFixed(1)} days ago`;
+        else if (elapsedHours >= 1) timeAgoStr = `${scenePrefix} ${elapsedHours.toFixed(1)} hours ago`;
+        else timeAgoStr = `${scenePrefix} ${Math.floor(elapsedMins)} mins ago`;
+
         if (elapsedHours > 1) {
           isOutdated = true;
-          contextParts.push(`${lastKnownSceneLine}\n[CRITICAL SCENE SHIFT]: It has been ${elapsedHours.toFixed(1)} hours since the last discussion. The 'Last Known Scene' is now strictly OUTDATED. You MUST abandon the previous scene context entirely and transition to a new scene appropriate for the 'Current time' and 'Active Event'. DO NOT continue the old actions or environment!`);
         }
       }
+
+      const lastKnownSceneLine = `${timeAgoStr}: ${ongoingScene.scene} | Outfit: ${ongoingScene.outfit}`;
       
-      if (!isOutdated) {
-        contextParts.push(`${lastKnownSceneLine} (Evaluate if this scene is outdated based on the time elapsed since the last interaction)`);
+      if (isOutdated) {
+        contextParts.push(`${lastKnownSceneLine}\n[CRITICAL SCENE SHIFT]: It has been ${elapsedHours.toFixed(1)} hours since the last discussion. The 'Last Known Scene' is now strictly OUTDATED. You MUST abandon the previous scene context entirely and transition to a new scene appropriate for the 'Current time' and 'Active Event'. DO NOT continue the old actions or environment!`);
+      } else {
+        contextParts.push(`${lastKnownSceneLine} (Evaluate whether this scene is still valid based on how much time has passed since it was last updated.)`);
       }
     }
 

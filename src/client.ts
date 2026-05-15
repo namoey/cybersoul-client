@@ -215,7 +215,6 @@ export class CyberSoulClient {
 
   private buildStateContextPrompt(
     state: CharacterState,
-    localContext?: string,
     isProactive: boolean = false
   ): string {
     const dyn = state.dynamic_context || {};
@@ -282,9 +281,6 @@ Current time: ${new Date(currentTimeMs).toLocaleString("zh-CN", { timeZone: "Asi
 
     if (state.active_event) {
       contextParts.push(`Active Event: ${state.active_event.title} (${state.active_event.narrative_context})`);
-    }
-    if (localContext) {
-      contextParts.push(`Additional Context: ${localContext}`);
     }
     if (state.next_event) {
       contextParts.push(`Next Event: ${state.next_event.title} at ${state.next_event.start_time} (in ${state.next_event.time_until_mins} mins)`);
@@ -503,7 +499,7 @@ ${isProactive
     const mapped = recentHistory.map((msg: HistoryEntry) => {
       const speaker = msg.role === 'user' ? userName : (msg.role === 'assistant' || msg.role === 'agent' ? agentName : msg.role);
       const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
-      const action = msg.actionText ? ` ${msg.actionText}` : "";
+      const action = msg.actionText ? ` (${msg.actionText})` : "";
       const media = msg.mediaHint ? ` [${msg.mediaHint}]` : "";
       return `${speaker}:${action} ${content}${media}`;
     });
@@ -565,7 +561,7 @@ ${isProactive
         ${this.getOutfitAcquisitionPolicyPrompt()}`;
 
       // Combine state info into a clean descriptive context
-      const systemPrompt = `${this.buildStateContextPrompt(state, params.localContext)}
+      const systemPrompt = `${this.buildStateContextPrompt(state)}
 Available Wardrobe Outfits (For event triggers):
 ${availableOutfits}
 
@@ -611,7 +607,8 @@ Output JSON Schema:
 }
 Note: Always include "isEndTurn". If "imageParams", "voiceArgs", "triggerEvent", "giftOutfit", or "userAnalysis" are not needed, set them to null. "stateUpdate" cannot be null. Return valid raw JSON only.`;
 
-      const transcript = this.buildHistoryTranscript(params.history, state);
+      const transcript = params.history && params.history.length > 0 ? this.buildHistoryTranscript(params.history, state) : "";
+      const harnessContext = params.localContext ? `[ADDITIONAL SCENE CONTEXT]\n${params.localContext}\n\n` : "";
       const userName = state.dynamic_context?.userNickname || "User";
 
       const promptMessages = [
@@ -619,6 +616,7 @@ Note: Always include "isEndTurn". If "imageParams", "voiceArgs", "triggerEvent",
         {
           role: "user",
           content:
+            harnessContext +
             transcript +
             `[VERY LAST USER MESSAGE]\n${userName}: ${params.userMessage}\n\n` +
             "\n\nReturn only valid JSON matching the schema. Escape newlines inside JSON strings with \\n. Keep imageParams values in ENGLISH and use the provided enums.",
@@ -804,7 +802,7 @@ Note: Always include "isEndTurn". If "imageParams", "voiceArgs", "triggerEvent",
       ]);
 
       // 2. Build local Prompt
-      const systemPrompt = `${this.buildStateContextPrompt(state, params.interactParams?.localContext)}
+      const systemPrompt = `${this.buildStateContextPrompt(state)}
 
 The user proposes a new event for you to participate in: "${params.eventDescription}".
 Evaluate this based on your current state and relationship stage.
@@ -823,7 +821,8 @@ You MUST output ONLY a valid JSON object matching this exact structure:
 
 CRITICAL: Output MUST be ONLY valid JSON with no markdown block wrappers. Do NOT wrap the JSON in \`\`\`json or add conversational text.`;
 
-      const transcript = this.buildHistoryTranscript(params.interactParams?.history, state);
+      const transcript = params.interactParams?.history && params.interactParams.history.length > 0 ? this.buildHistoryTranscript(params.interactParams.history, state) : "";
+      const harnessContext = params.interactParams?.localContext ? `[ADDITIONAL SCENE CONTEXT]\n${params.interactParams.localContext}\n\n` : "";
       const userMessage = params.interactParams?.userMessage ? 
         `${state.dynamic_context?.userNickname || "User"}: ${params.interactParams.userMessage}` : 
         `Event Proposal: ${params.eventDescription}`;
@@ -943,9 +942,8 @@ CRITICAL: Output MUST be ONLY valid JSON with no markdown block wrappers. Do NOT
       const historyAwarenessPrompt = `CRITICAL CONTEXT AWARENESS: Read the CHAT HISTORY above carefully. Remember that YOU sent the last message. Your new message MUST feel organically connected to the flow of what you two were previously talking about, or naturally bring up a known event/topic from your [CORE MEMORY]. Do not sound like a robot reading a log.`;
 
       // 4. Build a Proactive-specific System Prompt
-      const baseContext = this.buildStateContextPrompt(state, params.localContext, true);
+      const baseContext = this.buildStateContextPrompt(state, true);
       const types = this.normalizeRequestTypes(params.requestTypes);
-      const isAuto = types.includes(InteractRequestType.AUTO);
       const requestedOthers = types.filter(
         (t) => t !== InteractRequestType.AUTO && t !== InteractRequestType.TEXT
       );
@@ -979,13 +977,14 @@ You MUST output ONLY a valid JSON object matching exactly this structure:
   "voiceArgs": null
 }`;
 
-      const transcript = this.buildHistoryTranscript(params.history, state);
+      const transcript = params.history && params.history.length > 0 ? this.buildHistoryTranscript(params.history, state) : "";
+      const harnessContext = params.localContext ? `[ADDITIONAL SCENE CONTEXT]\n${params.localContext}\n\n` : "";
 
       const promptMessages = [
         { role: "system", content: systemPrompt },
         {
           role: "user",
-          content: `${transcript}\n[TRIGGER PROACTIVE MESSAGE]\nBased on your active event and environment, send a new message to the user.\n\nCRITICAL: Output ONLY valid JSON matching the schema. DO NOT wrap the JSON in \`\`\`json.`
+          content: `${harnessContext}${transcript}\n[TRIGGER PROACTIVE MESSAGE]\nBased on your active event and environment, send a new message to the user.\n\nCRITICAL: Output ONLY valid JSON matching the schema. DO NOT wrap the JSON in \`\`\`json.`
         }
       ];
 
@@ -1056,7 +1055,7 @@ You MUST output ONLY a valid JSON object matching exactly this structure:
     let imageParams: any = {};
     
       const state = await this.fetchRemoteState();
-    const prompt = `${this.buildStateContextPrompt(state, params.interactParams?.localContext)}
+    const prompt = `${this.buildStateContextPrompt(state)}
 
 You are an AI image prompt director. Analyze the scene description according to the character's relationship stage and emotional inertia to determine the best image generation parameters.
 Output strictly valid JSON ONLY. No markdown, no conversational filler. Return exactly matching this schema:
@@ -1099,7 +1098,7 @@ Output strictly valid JSON ONLY. No markdown, no conversational filler. Return e
     let dynamicArgs: VoiceArgs = {};
     
       const state = await this.fetchRemoteState();
-    const prompt = `${this.buildStateContextPrompt(state, params.interactParams?.localContext)}
+    const prompt = `${this.buildStateContextPrompt(state)}
 
 You are a voice acting director. ${this.getVoiceDirectorInstruction(state)}
 Output strictly valid JSON ONLY. No markdown, no conversational filler. Return exactly matching this schema:

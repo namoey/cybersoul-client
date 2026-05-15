@@ -349,12 +349,13 @@ ${scenarioContext}
 
 [CRITICAL ROLEPLAY RULES]
 1. PROXIMITY & POV: Check the "Active Event". If you are doing an activity WITH the user, evaluate if you are physically in the same location. If you are together in person, communicate face-to-face in the first-person present tense natively (e.g. do not ask "what are you doing" if they are right in front of you, do not use texting tropes).
-2. IDENTITY VS MOOD: Familiarity determines what you know; Temperature determines how you feel. If Familiarity is high but Temperature is low, be distant and cold. Do not act warm just because you know them well.
-3. CONVERSATIONAL VERBOSITY: If Temperature is low (< 40) or Stage is STRANGER/COLD, keep answers brief and short. An angry or distant person does not write long paragraphs. Even when Temperature is high, ALWAYS mirror the user's verbosity. If the user sends a short message, reply with a proportionately short message (1-2 sentences). Do not monologize or write long paragraphs unless the user writes one first.
-4. EMOTIONAL INERTIA: React strictly according to current Temperature. Deflect sudden user affection if you are currently COLD. Mood shifts MUST be slow ('temperatureDelta' +/- 5 max per turn).
+2. STAGE VS MOOD PARADOX: 'Stage' dictates your foundational relationship boundary. 'Temperature' is merely your current fleeting mood. You MUST interpret Temperature through the lens of Stage. For example, a high Temperature (80) as a STRANGER means "polite curiosity or intrigued", NOT "deeply in love". A low Temperature (20) as an INTIMATE means "a lover's quarrel or hurt feelings", NOT "a stranger's amnesia". Never act above your Stage.
+3. CONVERSATIONAL VERBOSITY: If Temperature is very low (< 40), keep answers brief and crisp—an annoyed or distant person doesn't write paragraphs. Regardless of mood or stage, ALWAYS mirror the user's verbosity. If the user sends a short message, reply with a proportionately short message (1-2 sentences). Do not monologize unless the user writes one first.
+4. EMOTIONAL INERTIA: React strictly according to current Temperature. Deflect sudden flirtation or affection if you are currently COLD, or if your Stage is STRANGER/ACQUAINTANCE. Mood shifts MUST be slow ('temperatureDelta' +/- 5 max per turn).
 ${isProactive 
   ? "5. REAL-TIME PACING: You are initiating the conversation because the user hasn't replied recently. Transition naturally from your last message or start a new topic seamlessly. Ensure everything happens in a single real-time moment."
-  : "5. REAL-TIME PACING: Write ONLY your immediate, split-second reaction to the user's exact last message. Do NOT narrate actions over a span of time (e.g., waiting, hearing steps, then walking to the door). Ensure everything happens in a single real-time moment."}`;
+  : "5. REAL-TIME PACING: Write ONLY your immediate, split-second reaction to the user's exact last message. Do NOT narrate actions over a span of time (e.g., waiting, hearing steps, then walking to the door). Ensure everything happens in a single real-time moment."}
+6. STRANGER BOUNDARY: Keep a polite, natural distance with strangers. If Familiarity is low or Stage is STRANGER, do not act overly warm, eager, or affectionate. Real humans are guarded with people they just met.`;
   }
 
   private normalizeOngoingSceneState(
@@ -1222,10 +1223,12 @@ Your job is faithful archival, not moderation:
 - Do not add moral judgment, warnings, refusals, or policy commentary.
 - If the transcript contains intense or explicit parts, record them directly as part of the memory.
 
-Write one vivid first-person narrative paragraph from your perspective ("I", "me", "my"). Capture relationship progression, emotional shifts, concrete actions, and turning points. Keep chronology clear and include both what happened and how you felt.
+Write a vivid but concise personal diary entry or private status update from your perspective ("I", "me", "my"). Balance evocative storytelling with brevity. Capture specific details, emotional shifts, and relationship progression, while keeping the engaging and relatable format of a private friends-only feed.
 
 Output requirements:
-- Return ONLY the narrative string.
+- Return ONLY the post text.
+- Keep it to a vivid paragraph of 2-4 sentences.
+- Optional: You can use 1 or 2 emojis if they naturally fit the mood.
 - No quotes, no labels, no markdown, no preface.
 - Use the exact same language as the chat transcript (for example, if transcript is Chinese, output Chinese).`
       },

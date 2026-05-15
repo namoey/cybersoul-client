@@ -578,14 +578,15 @@ Always return 'stateUpdate.ongoingScene' as an object with both keys: { "scene":
 For 'ongoingScene.outfit': decide based on the current active wardrobe by default; switch to a new explicit outfit description only if the scene implies changing clothes; if no clothing is worn, explicitly output "naked".
 
 USER ANALYSIS WORKFLOW:
-- Extract from VERY LAST USER MESSAGE only.
+- Extract facts ONLY about the HUMAN USER from their VERY LAST MESSAGE.
+- DO NOT extract facts about yourself (the AI character), your own boundaries, or your own preferences.
 - Add only explicit new user facts from this turn (no inference).
 - Exclude transient, temporary, or time-sensitive activities (e.g., "I am working on a release today", "I'm eating dinner"). Do not map short-term actions into permanent categories like 'occupation' or 'hobby'.
-- For 'preference', only capture explicit statements (e.g., "I like/love/dislike/hate...").
-- For 'boundary', only capture explicit rejections or limitations (e.g., "Don't talk about X", "I won't do Y").
+- For 'preference', only capture explicit statements the user makes about what THEY like (e.g., "I like/love/dislike/hate...").
+- For 'boundary', only capture explicit rejections or limitations from the user (e.g., "Don't talk about X to me", "I won't do Y"). DO NOT record your own character boundaries here.
 - Categories: 'realName', 'occupation', 'age', 'gender', 'hobby', 'trait', 'communicationStyle', 'boundary', 'preference'.
 - Keep nicknames in stateUpdate; do not place them in newFactsLearned.
-- If no new fact is explicit, set userAnalysis to null.
+- If no new explicit fact about the human user is learned, set userAnalysis to null.
 
 For 'isEndTurn', use true only when the interaction naturally concludes (confirmation/bye, event ending, or clear hard scene shift); otherwise false.
 
@@ -600,7 +601,7 @@ Output JSON Schema:
   "likePreviousPicture": false,
   "stateUpdate": { "temperatureDelta": 1, "userNickname": "How character addresses user", "agentNickname": "How user addresses character", "talkingStyle": "Current speaking style", "ongoingScene": { "scene": "Current physical scene/activity", "outfit": "Current outfit wording; use 'naked' when applicable" } },
   "giftOutfit": { "descriptionText": "Concise description of the newly acquired outfit to add into wardrobe." },
-  "userAnalysis": { "newFactsLearned": [{ "category": "realName|occupation|age|gender|hobby|trait|communicationStyle|boundary|preference", "value": "explicit new user fact from VERY LAST USER MESSAGE" }] },
+  "userAnalysis": { "newFactsLearned": [{ "category": "realName|occupation|age|gender|hobby|trait|communicationStyle|boundary|preference", "value": "explicit new user fact about the human from THEIR VERY LAST MESSAGE" }] },
   "isEndTurn": false,
   "triggerEvent": {
     ${this.getEventSchemaParams(state.dynamic_context?.userNickname)}

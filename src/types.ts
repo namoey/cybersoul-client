@@ -26,6 +26,7 @@ export interface HistoryEntry {
   actionText?: string;
   mediaHint?: string;
   isProactive?: boolean;
+  timestamp?: string | number | Date;
 }
 
 export interface InteractMetadata {

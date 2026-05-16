@@ -213,6 +213,22 @@ export class CyberSoulClient {
     return normalized;
   }
 
+  private getElapsedTimeInfo(currentTimeMs: number, lastInteractionAt: string | number | Date) {
+    const elapsedMs = Math.max(0, currentTimeMs - new Date(lastInteractionAt).getTime());
+    const elapsedMins = elapsedMs / (1000 * 60);
+    const elapsedHours = elapsedMins / 60;
+    const elapsedDays = elapsedHours / 24;
+    const elapsedYears = elapsedDays / 365;
+
+    let displayStr = "";
+    if (elapsedYears >= 1) displayStr = `${elapsedYears.toFixed(1)} years`;
+    else if (elapsedDays >= 1) displayStr = `${elapsedDays.toFixed(1)} days`;
+    else if (elapsedHours >= 1) displayStr = `${elapsedHours.toFixed(1)} hours`;
+    else displayStr = `${Math.floor(elapsedMins)} mins`;
+
+    return { elapsedMs, elapsedMins, elapsedHours, elapsedDays, elapsedYears, displayStr };
+  }
+
   private buildStateContextPrompt(
     state: CharacterState,
     isProactive: boolean = false
@@ -251,21 +267,14 @@ Current time: ${new Date(currentTimeMs).toLocaleString("zh-CN", { timeZone: "Asi
       const scenePrefix = "Last Known Scene";
       let timeAgoStr = scenePrefix;
       let isOutdated = false;
-      let elapsedHours = 0;
+      let timeDisplayStr = "";
       
       if (dyn.lastInteractionAt) {
-        const elapsedMs = currentTimeMs - new Date(dyn.lastInteractionAt).getTime();
-        const elapsedMins = Math.max(0, elapsedMs / (1000 * 60));
-        elapsedHours = elapsedMins / 60;
-        const elapsedDays = elapsedHours / 24;
-        const elapsedYears = elapsedDays / 365;
+        const timeInfo = this.getElapsedTimeInfo(currentTimeMs, dyn.lastInteractionAt);
+        timeDisplayStr = timeInfo.displayStr;
+        timeAgoStr = `${scenePrefix} ${timeDisplayStr} ago`;
 
-        if (elapsedYears >= 1) timeAgoStr = `${scenePrefix} ${elapsedYears.toFixed(1)} years ago`;
-        else if (elapsedDays >= 1) timeAgoStr = `${scenePrefix} ${elapsedDays.toFixed(1)} days ago`;
-        else if (elapsedHours >= 1) timeAgoStr = `${scenePrefix} ${elapsedHours.toFixed(1)} hours ago`;
-        else timeAgoStr = `${scenePrefix} ${Math.floor(elapsedMins)} mins ago`;
-
-        if (elapsedHours > 1) {
+        if (timeInfo.elapsedHours > 1) {
           isOutdated = true;
         }
       }
@@ -273,7 +282,7 @@ Current time: ${new Date(currentTimeMs).toLocaleString("zh-CN", { timeZone: "Asi
       const lastKnownSceneLine = `${timeAgoStr}: ${ongoingScene.scene} | Outfit: ${ongoingScene.outfit}`;
       
       if (isOutdated) {
-        contextParts.push(`${lastKnownSceneLine}\n[CRITICAL SCENE SHIFT]: It has been ${elapsedHours.toFixed(1)} hours since the last discussion. The 'Last Known Scene' is now strictly OUTDATED. You MUST abandon the previous scene context entirely and transition to a new scene appropriate for the 'Current time' and 'Active Event'. DO NOT continue the old actions or environment!`);
+        contextParts.push(`Previous Activity (Ended ${timeDisplayStr} ago): ${ongoingScene.scene}\n[SCENE RESET]: A significant amount of time has passed. The previous activity is completely over. You are now in a fresh, natural state based on your current Wardrobe and Time. Do NOT continue the previous actions.`);
       } else {
         contextParts.push(`${lastKnownSceneLine} (Evaluate whether this scene is still valid based on how much time has passed since it was last updated.)`);
       }
@@ -490,6 +499,32 @@ ${isProactive
     return payload as VoiceArgs;
   }
 
+  private formatHistoryEntries(history: HistoryEntry[], userName: string, agentName: string, promptDirective: string = ""): string {
+    const contextLines: string[] = [];
+
+    for (let i = 0; i < history.length; i++) {
+      const msg = history[i];
+
+      if (i > 0 && history[i - 1].timestamp && msg.timestamp) {
+        const prevTime = new Date(history[i - 1].timestamp!).getTime();
+        const currTime = new Date(msg.timestamp!).getTime();
+        const timeInfo = this.getElapsedTimeInfo(currTime, prevTime);
+        
+        if (timeInfo.elapsedHours > 1) {
+          contextLines.push(`\n[--- ${timeInfo.displayStr} later ---${promptDirective ? " " + promptDirective : ""} ---]\n`);
+        }
+      }
+
+      const speaker = msg.role === 'user' ? userName : (msg.role === 'assistant' || msg.role === 'agent' ? agentName : msg.role);
+      const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+      const action = msg.actionText ? ` (${msg.actionText})` : "";
+      const media = msg.mediaHint ? ` [${msg.mediaHint}]` : "";
+      contextLines.push(`${speaker}:${action} ${content}${media}`);
+    }
+
+    return contextLines.join('\n');
+  }
+
   private buildHistoryTranscript(history: HistoryEntry[] | undefined, state: CharacterState): string {
     if (!history || history.length === 0) return "";
     
@@ -497,14 +532,22 @@ ${isProactive
     const agentName = state.dynamic_context?.agentNickname || state.name || "Agent";
     const userName = state.dynamic_context?.userNickname || "User";
     
-    const mapped = recentHistory.map((msg: HistoryEntry) => {
-      const speaker = msg.role === 'user' ? userName : (msg.role === 'assistant' || msg.role === 'agent' ? agentName : msg.role);
-      const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
-      const action = msg.actionText ? ` (${msg.actionText})` : "";
-      const media = msg.mediaHint ? ` [${msg.mediaHint}]` : "";
-      return `${speaker}:${action} ${content}${media}`;
-    });
-    return `[CHAT HISTORY]\n${mapped.join('\n')}\n\n`;
+    const directive = "The previous chat history is completely outdated by the time passage. Do not continue its immediate action flow.";
+    const transcript = this.formatHistoryEntries(recentHistory, userName, agentName, directive);
+
+    let historyContent = `[CHAT HISTORY]\n${transcript}\n`;
+
+    // If there is a massive time gap between the chat history and the VERY LAST USER MESSAGE
+    if (state.dynamic_context?.lastInteractionAt) {
+      const currentTimeMs = state.current_time ? new Date(state.current_time).getTime() : Date.now();
+      const timeInfo = this.getElapsedTimeInfo(currentTimeMs, state.dynamic_context.lastInteractionAt);
+      
+      if (timeInfo.elapsedHours > 1) {
+        historyContent += `\n[--- ${timeInfo.displayStr} later --- The previous chat history is completely outdated by the time passage. Do not continue its immediate action flow. ---]\n`;
+      }
+    }
+
+    return historyContent + "\n";
   }
 
   public async interact(params: InteractParams): Promise<InteractResponse> {
@@ -1202,14 +1245,14 @@ Output strictly valid JSON ONLY. No markdown, no conversational filler. Return e
    * Automatically detect and summarize the story from the current chat history. 
    * It takes raw message history and returns a narrative paragraph representing the current story segment.
    */
-  public async summarizeHistory(history: { role: string; content: string }[]): Promise<string> {
+  public async summarizeHistory(history: HistoryEntry[]): Promise<string> {
     if (!history || history.length === 0) return "";
     
     const state = await this.getState();
     const userName = state.dynamic_context?.userNickname || "User";
     const agentName = state.dynamic_context?.agentNickname || "Character";
 
-    const transcript = history.map(h => `${h.role === 'user' ? userName : agentName}: ${h.content}`).join('\n');
+    const transcript = this.formatHistoryEntries(history, userName, agentName);
     
     const promptMessages = [
       {

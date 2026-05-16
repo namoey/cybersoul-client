@@ -126,6 +126,8 @@ export interface OngoingSceneState {
 }
 
 export interface DispatcherIntent {
+  shouldSkipProactive?: boolean;
+  skipReason?: string;
   textResponse?: string;
   actionText?: string;
   imageParams?: any;

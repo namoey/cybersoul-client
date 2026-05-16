@@ -1004,6 +1004,7 @@ CRITICAL: Output MUST be ONLY valid JSON with no markdown block wrappers. Do NOT
 
 [PROACTIVE INITIATION TASK]
 The user has NOT spoken to you recently. You sent the last message in the chat history, and they haven't replied. You are deciding to follow up proactively.
+If you decide that based on your current mood and the relationship stage it's better not to send a message right now (e.g. you are cold and giving them space), you can skip this proactive message by setting "shouldSkipProactive" to true.
 ${interrogationStrategy}
 ${historyAwarenessPrompt}
 Consider the user's known traits (${userTraits}) when choosing how to act. Need to keep it strictly under 2-3 sentences max.
@@ -1014,6 +1015,8 @@ ${availableOutfits}
 ${modalitiesInstruction}
 You MUST output ONLY a valid JSON object matching exactly this structure:
 {
+  "shouldSkipProactive": false,
+  "skipReason": "(Optional. Reason for skipping if shouldSkipProactive is true)",
   "actionText": "(Scene descriptions, physical actions, expressions, inner feelings) ONLY.",
   "textResponse": "Spoken dialogue ONLY.",
   "stateUpdate": { "temperatureDelta": 1, "ongoingScene": { "scene": "...", "outfit": "..." } },
@@ -1040,6 +1043,13 @@ You MUST output ONLY a valid JSON object matching exactly this structure:
         parsedIntent = robustJsonParse<DispatcherIntent>(rawLlmResponse, "Proactive fallback");
       } catch (e) {
         parsedIntent = { textResponse: rawLlmResponse.replace(/^[\`\s]+|[\`\s]+$/g, "").trim() };
+      }
+
+      if (parsedIntent.shouldSkipProactive) {
+        return {
+          status: "skipped",
+          reason: parsedIntent.skipReason || "Character decided to skip proactive message based on mood/stage."
+        };
       }
 
       // Update Remote state if needed

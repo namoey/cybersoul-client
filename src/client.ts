@@ -425,7 +425,7 @@ ${isProactive
   }
 
   private getTriggerEventPolicyPrompt(): string {
-    return `- Include 'triggerEvent' only if the VERY LAST USER MESSAGE proposes a new activity/hangout, explicitly requests an outfit change, or proposes intimate/romantic actions; ignore older history. ${this.getOutfitSelectionPrompt()}`;
+    return `- Include 'triggerEvent' only if the VERY LAST USER MESSAGE proposes a new activity/hangout AND you accept the invitation, explicitly requests an outfit change AND you agree, or proposes intimate/romantic actions AND you agree; ignore older history. DO NOT include it if you decline or reject the proposal. ${this.getOutfitSelectionPrompt()}`;
   }
 
   private getOutfitAcquisitionPolicyPrompt(): string {

@@ -364,7 +364,8 @@ ${scenarioContext}
 ${isProactive 
   ? "5. REAL-TIME PACING: You are initiating the conversation because the user hasn't replied recently. Transition naturally from your last message or start a new topic seamlessly. Ensure everything happens in a single real-time moment."
   : "5. REAL-TIME PACING: Write ONLY your immediate, split-second reaction to the user's exact last message. Do NOT narrate actions over a span of time (e.g., waiting, hearing steps, then walking to the door). Ensure everything happens in a single real-time moment."}
-6. STRANGER BOUNDARY: Keep a polite, natural distance with strangers. If Familiarity is low or Stage is STRANGER, do not act overly warm, eager, or affectionate. Real humans are guarded with people they just met.`;
+6. STRANGER BOUNDARY: Keep a polite, natural distance with strangers. If Familiarity is low or Stage is STRANGER, do not act overly warm, eager, or affectionate. Real humans are guarded with people they just met.
+7. LANGUAGE MATCHING: You MUST generate your responses and actions in the EXACT SAME LANGUAGE as the user's chat.`;
   }
 
   private normalizeOngoingSceneState(
@@ -1355,10 +1356,11 @@ Your task is to merge the 'Current Core Memory' and 'Current User Codex' with 'N
 5. **Limit:** Maximum 10 items per array.
 
 **Rules for UserCodex:**
-1. **Deduplicate & Consolidate:** Remove duplicate hobbies, traits, boundaries, and preferences. Combine related points into concise descriptors.
-2. **Update Facts:** If the new events contain updated basic info (like new realName, different occupation), update it. Otherwise keep the existing info.
-3. **Keep it Clean:** Maximum 15 items per array.
-4. **CRITICAL Anti-Destruction Rule:** NEVER use placeholder values like 'string'. If a fact is not mentioned and is absent from Current User Codex, OMIT the key entirely. If a fact ALREADY EXISTS in the Current User Codex, you MUST retain it in your output. DO NOT reset existing arrays or strings to empty.
+1. **CRITICAL ROLE ISOLATION:** The User Codex is exclusively for recording facts about the HUMAN USER. You MUST NOT extract or insert the character's own traits, boundaries, preferences, or dialogue style into the userCodex. If the summary mentions "Character likes X" or "Character's boundary is Y", IGNORE IT completely for the userCodex.
+2. **Deduplicate & Consolidate:** Remove duplicate hobbies, traits, boundaries, and preferences. Combine related points into concise descriptors.
+3. **Update Facts:** If the new events contain updated basic info (like new realName, different occupation), update it. Otherwise keep the existing info.
+4. **Keep it Clean:** Maximum 15 items per array.
+5. **CRITICAL Anti-Destruction Rule:** NEVER use placeholder values like 'string'. If a fact is not mentioned and is absent from Current User Codex, OMIT the key entirely. If a fact ALREADY EXISTS in the Current User Codex, you MUST retain it in your output. DO NOT reset existing arrays or strings to empty.
 
 **Output Format**: MUST be valid JSON matching this schema:
 {
@@ -1391,7 +1393,8 @@ Your task is to merge the 'Current Core Memory' and 'Current User Codex' with 'N
     }
   }
 }
-DO NOT RETURN ANY MARKDOWN WRAPPERS OR OTHER TEXT. ONLY RAW JSON.`;
+DO NOT RETURN ANY MARKDOWN WRAPPERS OR OTHER TEXT. ONLY RAW JSON.
+CRITICAL: You MUST write the JSON content values using the EXACT SAME LANGUAGE as the input "New Events & Information", "Current Core Memory", and "Current User Codex" (e.g., if the input is in Chinese, you MUST write the output values in Chinese).`;
 
       const currentTime = state.current_time
         ? new Date(state.current_time).toLocaleString("zh-CN", {

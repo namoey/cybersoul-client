@@ -966,19 +966,20 @@ CRITICAL: Output MUST be ONLY valid JSON with no markdown block wrappers. Do NOT
 
       // 3. Evaluate behavioral approach based on relationship and personality
       const dyn = state.dynamic_context || {};
-      const stage = state.relationship_stage || "ACQUAINTANCE";
-      const temperature = dyn.temperature ?? 50;
+      const stage = state.relationship_stage || "STRANGER";
+      const temperature = dyn.temperature ?? 0;
       const userTraits = state.user_codex?.psychological?.traits?.join(", ") || "";
 
       let interrogationStrategy = "Do not ask 'are you there?' or 'why aren't you answering?'. Just share your current status, a passing thought, complain whimsically, or tease the user naturally like a real partner.";
       
-      if (stage === "INTIMATE" || stage === "PARTNER" || (stage === "WARM" && temperature > 70)) {
-        if (temperature > 70) {
-            interrogationStrategy = "Because you are deeply intimate and highly affectionate, you MISS them. You MAY organically 'interrogate' or pout playfully about why they are ignoring you (e.g., 'Are you too busy for me?', 'Still ignoring your girl?'). Act like a real, slightly needy/attached partner.";
-        } else if (temperature < 40) {
-            interrogationStrategy = "Because you are intimate but currently feeling cold/angry, you notice they are ignoring you. You MAY be passive-aggressive or cross-examine them coldly (e.g., 'So we're just not talking today?', 'Fine, keep ignoring me.').";
-        }
-      } else if (stage === "COLD" || stage === "STRANGER") {
+      if (stage === "PARTNER" || (stage === "INTIMATE" && temperature > 70)) {
+          // PARTNER (>85) or High INTIMATE (>70)
+          interrogationStrategy = "Because you are deeply intimate and highly affectionate, you MISS them. You MAY organically 'interrogate' or pout playfully about why they are ignoring you (e.g., 'Are you too busy for me?', 'Still ignoring your girl?'). Act like a real, slightly needy/attached partner.";
+      } else if (stage === "INTIMATE" || stage === "WARM") {
+          // Low INTIMATE (60-70) or WARM (40-60)
+          interrogationStrategy = "Because you are close but currently feeling neglected or cold, you notice they are ignoring you. You MAY be passive-aggressive or cross-examine them coldly (e.g., 'So we're just not talking today?', 'Fine, keep ignoring me.').";
+      } else if (stage === "COLD" || stage === "ACQUAINTANCE" || stage === "STRANGER") {
+         // COLD (<40)
          interrogationStrategy = "You are distant. Do NOT double-text with neediness. If you must speak, make it a detached observation or a cold administrative remark.";
       }
 
@@ -1076,10 +1077,9 @@ You MUST output ONLY a valid JSON object matching exactly this structure:
       
       // Handle Optional Media (Image only for proactive to save compute normally, but you can extend)
       let finalImageUrl: string | undefined = undefined;
-      if (requestedOthers.includes(InteractRequestType.IMAGE) || !!parsedIntent.imageParams) {
-          const imagePayload = parsedIntent.imageParams || { mode: "full-prompt", full_prompt: parsedIntent.textResponse };
+      if (parsedIntent.imageParams) {
           try {
-             const res = await this.generatePrimitive("image", imagePayload);
+             const res = await this.generatePrimitive("image", parsedIntent.imageParams);
              finalImageUrl = res.image_url;
           } catch(e) {
              console.error("[CyberSoulClient] Proactive Image generation failed:", e);

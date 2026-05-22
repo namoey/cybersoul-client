@@ -39,7 +39,8 @@ export class CyberSoulClient {
     this.llm = new GenericLLMProvider(
       config.llmConfig,
       config.backendUrl,
-      config.characterKey
+      config.characterKey,
+      config.fetchImpl
     );
   }
 
@@ -67,7 +68,8 @@ export class CyberSoulClient {
       const timeout = setTimeout(() => controller.abort(), this.requestTimeoutMs);
 
       try {
-        const response = await fetch(url, {
+        const fetchFn = this.config.fetchImpl ?? fetch;
+        const response = await fetchFn(url, {
           ...options,
           headers,
           signal: controller.signal,
@@ -500,6 +502,35 @@ ${isProactive
     return payload as VoiceArgs;
   }
 
+  /**
+   * Strip content the TTS engine can't speak naturally:
+   *   - Stage-direction wrappers like (smiles), （挑眉）, [pauses], 【动作】, *grins*
+   *     — these slip through despite prompt instructions and the engine will
+   *     literally read the brackets/asterisks if left in.
+   *   - Emoji and emoji-component codepoints (Extended_Pictographic plus the
+   *     ZWJ / variation-selector / skin-tone / regional-indicator scaffolding
+   *     that builds composite emoji). TTS providers either read these aloud
+   *     as the literal Unicode name ("face with tears of joy") or produce a
+   *     glitchy artifact, both of which sound wrong.
+   *
+   * Collapses runs of whitespace introduced by removals and trims the result.
+   * Returns "" if everything gets stripped — callers should fall back to a
+   * neutral placeholder (e.g. "...") so the TTS call still has valid input.
+   */
+  private sanitizeTextForVoice(text: unknown): string {
+    if (typeof text !== "string") return "";
+    return text
+      // (parens), （全角）, [brackets], 【全角】, *asterisks*
+      .replace(/[\(（\[【\*].*?[\)）\]】\*]/g, "")
+      // emoji + ZWJ + variation selectors + skin-tone modifiers + regional indicators
+      .replace(
+        /[\p{Extended_Pictographic}\u200D\uFE0F\uFE0E\u{1F3FB}-\u{1F3FF}\u{1F1E6}-\u{1F1FF}]/gu,
+        "",
+      )
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
   private formatHistoryEntries(history: HistoryEntry[], userName: string, agentName: string, promptDirective: string = ""): string {
     const contextLines: string[] = [];
 
@@ -782,14 +813,9 @@ Note: Always include "isEndTurn". If "imageParams", "voiceArgs", "triggerEvent",
             ? (parsedIntent.voiceArgs as VoiceArgs)
             : {};
 
-        let textForVoice = resolvedTextResponse;
+        let textForVoice = this.sanitizeTextForVoice(resolvedTextResponse);
 
-        // One final bulletproof regex wash to strip (smiles) and *laughs* just in case the LLM disobeys
-        if (typeof textForVoice === "string") {
-          textForVoice = textForVoice.replace(/[\(（\[【\*].*?[\)）\]】\*]/g, '').trim();
-        }
-
-        if (typeof textForVoice !== "string" || textForVoice.trim().length === 0) {
+        if (textForVoice.length === 0) {
           textForVoice = "...";
         }
 
@@ -1184,7 +1210,7 @@ Output strictly valid JSON ONLY. No markdown, no conversational filler. Return e
     }
     
     const res = await this.generatePrimitive("voice", {
-      text: params.text,
+      text: this.sanitizeTextForVoice(params.text) || "...",
       dynamicArgs,
     });
 

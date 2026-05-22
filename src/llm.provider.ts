@@ -6,8 +6,13 @@ export class GenericLLMProvider implements BaseLLMProvider {
   constructor(
     private config: GenericLLMConfig,
     private backendApiUrl: string,
-    private backendAuthToken?: string
+    private backendAuthToken?: string,
+    private fetchImpl?: typeof fetch
   ) {}
+
+  private get fetchFn(): typeof fetch {
+    return this.fetchImpl ?? fetch;
+  }
 
   private async fetchTemplate() {
     const cacheKey = `${this.config.provider}:${this.config.model}`;
@@ -27,7 +32,7 @@ export class GenericLLMProvider implements BaseLLMProvider {
       model: this.config.model
     });
     
-    const resp = await fetch(`${this.backendApiUrl}/api/v1/cyber-soul/llm-models/template?${qs.toString()}`, {
+    const resp = await this.fetchFn(`${this.backendApiUrl}/api/v1/cyber-soul/llm-models/template?${qs.toString()}`, {
       headers
     });
     
@@ -77,7 +82,7 @@ export class GenericLLMProvider implements BaseLLMProvider {
       payload.messages = messages;
     }
 
-    const response = await fetch(template.apiUrl, {
+    const response = await this.fetchFn(template.apiUrl, {
       method: 'POST',
       headers,
       body: JSON.stringify(payload)

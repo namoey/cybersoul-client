@@ -11,6 +11,15 @@ export interface CyberSoulClientConfig {
   llmConfig: GenericLLMConfig;
   requestTimeoutMs?: number;
   maxRetries?: number;
+  /**
+   * Optional fetch override. When provided, the client uses this in
+   * place of the global `fetch` for every HTTP call (backend + LLM
+   * provider). Intended for environments where the global fetch is
+   * suspended by the host platform — e.g. React Native on Samsung
+   * BBA / Doze — and a native HTTP path must be used instead. Must
+   * conform to the standard `fetch` signature.
+   */
+  fetchImpl?: typeof fetch;
 }
 
 export enum InteractRequestType {

@@ -46,6 +46,19 @@ export interface InteractMetadata {
   likePreviousPicture?: boolean;
 }
 
+/**
+ * Server-authoritative snapshot returned by PATCH /characters/dynamic-context
+ * after the backend applies stage dampening, familiarity soft caps, hard
+ * floors, rounding, and stage re-evaluation. Use this instead of recomputing
+ * the delta on the client.
+ */
+export interface PersistedDynamicContext {
+  /** Persisted absolute temperature (0-100), post all server-side adjustments. */
+  temperature?: number;
+  /** Persisted relationship stage label after re-evaluation. */
+  relationshipStage?: string;
+}
+
 export interface ProactiveParams {
   history?: HistoryEntry[];
   maxUnreplied?: number;
@@ -62,6 +75,8 @@ export interface ProactiveResponse {
   imageUrl?: string;
   audioUrl?: string;
   stateUpdate?: DispatcherIntent["stateUpdate"];
+  /** Server-authoritative post-write snapshot (see PersistedDynamicContext). */
+  persistedDynamicContext?: PersistedDynamicContext;
   error?: string;
 }
 
@@ -126,6 +141,8 @@ export interface InteractResponse {
   stateUpdate?: DispatcherIntent["stateUpdate"];
   userAnalysis?: DispatcherIntent["userAnalysis"];
   isEndTurn?: boolean;
+  /** Server-authoritative post-write snapshot (see PersistedDynamicContext). */
+  persistedDynamicContext?: PersistedDynamicContext;
   error?: string;
 }
 

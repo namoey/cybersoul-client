@@ -18,6 +18,7 @@ import {
   HistoryEntry,
   OngoingSceneState,
   LikedPicture,
+  PersistedDynamicContext,
 } from "./types.js";
 import { robustJsonParse } from "./utils/json.utils.js";
 import { GenericLLMProvider } from "./llm.provider.js";
@@ -156,11 +157,23 @@ export class CyberSoulClient {
     return res.json();
   }
 
+  /**
+   * PATCH the backend dynamic context. The server applies stage-based
+   * dampening, familiarity soft-caps, hard floor, and stage re-evaluation,
+   * then returns the *authoritative* persisted `temperature` and
+   * `relationshipStage`. We surface those so callers (and ultimately the UI)
+   * can avoid recomputing the delta locally — local math would diverge from
+   * the server because the LLM-supplied `temperatureDelta` is just raw intent.
+   *
+   * Returns `null` when there's nothing to send, or when the request fails
+   * (failure is non-fatal for the chat turn; callers must treat `null` as
+   * "no fresh server snapshot available").
+   */
   private async _updateDynamicContextInternal(
     stateUpdate: DispatcherIntent["stateUpdate"],
     userAnalysis?: DispatcherIntent["userAnalysis"],
-  ): Promise<void> {
-    if (!stateUpdate && !userAnalysis) return;
+  ): Promise<PersistedDynamicContext | null> {
+    if (!stateUpdate && !userAnalysis) return null;
 
     // Map TS schema intent (temperatureDelta) to match Backend payload schema (temperature)
     const payload: any = { ...stateUpdate };
@@ -179,10 +192,47 @@ export class CyberSoulClient {
       payload.ongoingScene = normalizedOngoingScene || null;
     }
 
-    await this.apiFetch("/api/v1/cyber-soul/characters/dynamic-context", {
-      method: "PATCH",
-      body: JSON.stringify(payload),
-    }).catch((e: any) => console.error("Failed to update dynamic context", e)); // non-blocking error handler
+    let res: Response;
+    try {
+      res = await this.apiFetch("/api/v1/cyber-soul/characters/dynamic-context", {
+        method: "PATCH",
+        body: JSON.stringify(payload),
+      });
+    } catch (e) {
+      console.error("Failed to update dynamic context", e);
+      return null;
+    }
+
+    if (!res.ok) {
+      console.error(
+        `Failed to update dynamic context: HTTP ${res.status}`,
+      );
+      return null;
+    }
+
+    try {
+      const body = (await res.json()) as {
+        status?: string;
+        dynamicContext?: { temperature?: number };
+        relationshipStage?: string;
+      };
+      const temperature =
+        typeof body.dynamicContext?.temperature === "number" &&
+        Number.isFinite(body.dynamicContext.temperature)
+          ? body.dynamicContext.temperature
+          : undefined;
+      const relationshipStage =
+        typeof body.relationshipStage === "string"
+          ? body.relationshipStage
+          : undefined;
+      if (temperature === undefined && relationshipStage === undefined) {
+        return null;
+      }
+      return { temperature, relationshipStage };
+    } catch (e) {
+      console.error("Failed to parse dynamic-context PATCH response", e);
+      return null;
+    }
   }
 
   private normalizeRequestTypes(
@@ -722,9 +772,19 @@ Note: Always include "isEndTurn". If "imageParams", "voiceArgs", "triggerEvent",
       }
       // console.debug("[CyberSoulClient] Parsed Intent:", parsedIntent);
 
-      // 4. Update Backend State async
+      // 4. Update Backend State async (in parallel with media generation
+      //    below). We keep the promise so we can resolve the
+      //    server-authoritative `temperature` / `relationshipStage` and
+      //    return it in the final response — clients cannot reproduce the
+      //    server's stage dampening + soft caps locally, so this is the only
+      //    reliable source of truth.
+      let persistedStatePromise: Promise<PersistedDynamicContext | null> =
+        Promise.resolve(null);
       if (parsedIntent && (parsedIntent.stateUpdate || parsedIntent.userAnalysis)) {
-        this._updateDynamicContextInternal(parsedIntent.stateUpdate, parsedIntent.userAnalysis);
+        persistedStatePromise = this._updateDynamicContextInternal(
+          parsedIntent.stateUpdate,
+          parsedIntent.userAnalysis,
+        );
       }
 
         const resolvedTextResponse =
@@ -838,6 +898,13 @@ Note: Always include "isEndTurn". If "imageParams", "voiceArgs", "triggerEvent",
       // Wait for image/voice gens to return successfully
       await Promise.all(mediaTasks);
 
+      // Await the dynamic-context PATCH alongside media so the final
+      // response carries the server's authoritative temperature/stage.
+      // This adds at most ~1 small request to the critical path; in
+      // practice the PATCH usually resolves before media generation.
+      const persistedDynamicContext =
+        (await persistedStatePromise) ?? undefined;
+
       return {
         status: "success",
         textResponse: resolvedTextResponse || "...",
@@ -850,6 +917,7 @@ Note: Always include "isEndTurn". If "imageParams", "voiceArgs", "triggerEvent",
         stateUpdate: parsedIntent.stateUpdate,
         userAnalysis: parsedIntent.userAnalysis,
         isEndTurn: parsedIntent.isEndTurn,
+        persistedDynamicContext,
       };
     } catch (error: any) {
       console.error("[CyberSoulClient] Interface Error: ", error);
@@ -1080,9 +1148,14 @@ You MUST output ONLY a valid JSON object matching exactly this structure:
         };
       }
 
-      // Update Remote state if needed
+      // Update Remote state if needed (capture promise for authoritative
+      // server snapshot — see notes in interact()).
+      let persistedStatePromise: Promise<PersistedDynamicContext | null> =
+        Promise.resolve(null);
       if (parsedIntent.stateUpdate) {
-        this._updateDynamicContextInternal(parsedIntent.stateUpdate).catch(e => console.error(e));
+        persistedStatePromise = this._updateDynamicContextInternal(
+          parsedIntent.stateUpdate,
+        );
       }
 
       const resolvedTextResponse =
@@ -1113,12 +1186,16 @@ You MUST output ONLY a valid JSON object matching exactly this structure:
           }
       }
 
+      const persistedDynamicContext =
+        (await persistedStatePromise) ?? undefined;
+
       return {
         status: "success",
         textResponse: parsedIntent.textResponse,
         actionText: parsedIntent.actionText,
         imageUrl: finalImageUrl,
-        stateUpdate: parsedIntent.stateUpdate
+        stateUpdate: parsedIntent.stateUpdate,
+        persistedDynamicContext,
       };
 
     } catch (error: any) {
@@ -1229,11 +1306,13 @@ Output strictly valid JSON ONLY. No markdown, no conversational filler. Return e
 
   /**
    * Updates the character's relationship temperature or mood.
+   * Returns the server-authoritative post-write `{ temperature, relationshipStage }`
+   * snapshot (or `null` if there was nothing to send / the request failed).
    */
   public async updateDynamicContext(
     stateUpdate: DispatcherIntent["stateUpdate"],
     userAnalysis?: DispatcherIntent["userAnalysis"],
-  ): Promise<void> {
+  ): Promise<PersistedDynamicContext | null> {
     return this._updateDynamicContextInternal(stateUpdate, userAnalysis);
   }
 

@@ -19,6 +19,7 @@ import {
   OngoingSceneState,
   LikedPicture,
   PersistedDynamicContext,
+  SupportedLLMModel,
 } from "./types.js";
 import { robustJsonParse } from "./utils/json.utils.js";
 import { GenericLLMProvider } from "./llm.provider.js";
@@ -1302,6 +1303,26 @@ Output strictly valid JSON ONLY. No markdown, no conversational filler. Return e
    */
   public async getState(): Promise<CharacterState> {
     return this.fetchRemoteState();
+  }
+
+  /**
+   * List the public LLM models the backend currently supports, including the
+   * `customConfigDefinition` schema for each model's `customSettings`.
+   *
+   * Use this to discover valid `provider` / `model` strings and the keys
+   * each model accepts via `llmConfig.customSettings`.
+   */
+  public async listSupportedLLMs(): Promise<SupportedLLMModel[]> {
+    const res = await this.apiFetch("/api/v1/cyber-soul/llm-models");
+    if (!res.ok) {
+      throw new Error(`Failed to list supported LLMs: ${res.status}`);
+    }
+    const body = (await res.json()) as unknown;
+    if (Array.isArray(body)) return body as SupportedLLMModel[];
+    if (body && typeof body === "object" && Array.isArray((body as any).data)) {
+      return (body as any).data as SupportedLLMModel[];
+    }
+    throw new Error("Unexpected response shape from /llm-models");
   }
 
   /**

@@ -348,6 +348,21 @@ export interface IVoiceModel {
   pointsPerGeneration: number;
 }
 
+/**
+ * Public LLM model entry returned by `GET /api/v1/cyber-soul/llm-models`.
+ *
+ * - `provider` is the value to pass as `llmConfig.provider`.
+ * - `name` is the value to pass as `llmConfig.model`.
+ * - `customConfigDefinition` describes the keys (and their constraints) that
+ *   the model accepts via `llmConfig.customSettings`.
+ */
+export interface SupportedLLMModel {
+  id: string;
+  name: string;
+  provider: string;
+  customConfigDefinition: IModelCustomConfigField[];
+}
+
 export interface ICharacterProfile {
   id: string;
   name: string;

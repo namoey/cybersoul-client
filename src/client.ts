@@ -808,7 +808,9 @@ Note: Always include "isEndTurn". If "imageParams", "voiceArgs", "triggerEvent",
       // 5. Build Final Media Calls parallel
       const mediaTasks = [];
       let finalImageUrl: string | undefined = undefined;
+      let finalImageMediaId: string | undefined = undefined;
       let finalAudioUrl: string | undefined = undefined;
+      let finalAudioMediaId: string | undefined = undefined;
       let finalDurationSec: number | undefined = undefined;
 
       // Output Event Trigger
@@ -857,6 +859,7 @@ Note: Always include "isEndTurn". If "imageParams", "voiceArgs", "triggerEvent",
           this.generatePrimitive("image", imagePayload)
             .then((res: any) => {
               finalImageUrl = res.image_url;
+              finalImageMediaId = res.id;
             })
             .catch((e: any) => {
               console.error("[CyberSoulClient] Image generation failed:", e);
@@ -887,6 +890,7 @@ Note: Always include "isEndTurn". If "imageParams", "voiceArgs", "triggerEvent",
           })
             .then((res: any) => {
               finalAudioUrl = res.audio_url;
+              finalAudioMediaId = res.id;
               finalDurationSec = res.duration_sec;
             })
             .catch((e: any) => {
@@ -911,7 +915,9 @@ Note: Always include "isEndTurn". If "imageParams", "voiceArgs", "triggerEvent",
         textResponse: resolvedTextResponse || "...",
         actionText: parsedIntent.actionText || "",
         imageUrl: finalImageUrl,
+        imageMediaId: finalImageMediaId,
         audioUrl: finalAudioUrl,
+        audioMediaId: finalAudioMediaId,
         likePreviousPicture: parsedIntent.likePreviousPicture,
         durationSec: finalDurationSec,
         triggeredEvent: parsedIntent.triggerEvent || undefined,
@@ -1178,10 +1184,12 @@ You MUST output ONLY a valid JSON object matching exactly this structure:
       
       // Handle Optional Media (Image only for proactive to save compute normally, but you can extend)
       let finalImageUrl: string | undefined = undefined;
+      let finalImageMediaId: string | undefined = undefined;
       if (parsedIntent.imageParams) {
           try {
              const res = await this.generatePrimitive("image", parsedIntent.imageParams);
              finalImageUrl = res.image_url;
+             finalImageMediaId = res.id;
           } catch(e) {
              console.error("[CyberSoulClient] Proactive Image generation failed:", e);
           }
@@ -1195,6 +1203,7 @@ You MUST output ONLY a valid JSON object matching exactly this structure:
         textResponse: parsedIntent.textResponse,
         actionText: parsedIntent.actionText,
         imageUrl: finalImageUrl,
+        imageMediaId: finalImageMediaId,
         stateUpdate: parsedIntent.stateUpdate,
         persistedDynamicContext,
       };
@@ -1210,7 +1219,7 @@ You MUST output ONLY a valid JSON object matching exactly this structure:
    */
   public async generateImage(
     params: { sceneDescription: string; interactParams?: InteractParams },
-  ): Promise<{ imageUrl: string }> {
+  ): Promise<{ imageUrl: string; imageMediaId?: string }> {
     let imageParams: any = {};
     
       const state = await this.fetchRemoteState();
@@ -1245,6 +1254,7 @@ Output strictly valid JSON ONLY. No markdown, no conversational filler. Return e
 
     return {
       imageUrl: res.image_url,
+      imageMediaId: res.id,
     };
   }
 
@@ -1253,7 +1263,7 @@ Output strictly valid JSON ONLY. No markdown, no conversational filler. Return e
    */
   public async generateVoice(
     params: { text: string; interactParams?: InteractParams },
-  ): Promise<{ audioUrl: string; durationSec?: number }> {
+  ): Promise<{ audioUrl: string; audioMediaId?: string; durationSec?: number }> {
     let dynamicArgs: VoiceArgs = {};
     
       const state = await this.fetchRemoteState();
@@ -1294,6 +1304,7 @@ Output strictly valid JSON ONLY. No markdown, no conversational filler. Return e
 
     return {
       audioUrl: res.audio_url,
+      audioMediaId: res.id,
       durationSec: res.duration_sec,
     };
   }

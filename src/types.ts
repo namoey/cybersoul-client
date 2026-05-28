@@ -73,7 +73,9 @@ export interface ProactiveResponse {
   textResponse?: string;
   actionText?: string;
   imageUrl?: string;
+  imageMediaId?: string;
   audioUrl?: string;
+  audioMediaId?: string;
   stateUpdate?: DispatcherIntent["stateUpdate"];
   /** Server-authoritative post-write snapshot (see PersistedDynamicContext). */
   persistedDynamicContext?: PersistedDynamicContext;
@@ -129,7 +131,9 @@ export interface InteractResponse {
   textResponse: string;
   actionText?: string;
   imageUrl?: string;
+  imageMediaId?: string;
   audioUrl?: string;
+  audioMediaId?: string;
   likePreviousPicture?: boolean;
   durationSec?: number;
   triggeredEvent?: {

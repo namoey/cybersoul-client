@@ -289,6 +289,7 @@ export interface CharacterState {
   appearance?: string;
   interaction_boundaries?: string;
   communication_style?: string;
+  backstory?: string;
   user_codex?: UserCodex;
 }
 

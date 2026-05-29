@@ -298,6 +298,7 @@ export class CyberSoulClient {
 Name: ${state.name}
 Demographics: Age ${state.age || "unknown"}, Gender ${state.gender || "unknown"}, Occupation ${state.occupation || "unknown"}${appearanceStr}
 Hobby: ${state.hobby || "unknown"}
+Backstory: ${state.backstory || "None"}
 Personality Traits: ${state.personality_traits || "None"}
 Communication Style: ${state.communication_style || "None"}
 Interaction Boundaries: ${state.interaction_boundaries || "None"}`);

@@ -79,6 +79,11 @@ export interface ProactiveResponse {
   stateUpdate?: DispatcherIntent["stateUpdate"];
   /** Server-authoritative post-write snapshot (see PersistedDynamicContext). */
   persistedDynamicContext?: PersistedDynamicContext;
+  /** Partial-failure descriptor: text was generated successfully but one or
+   * more media calls (image/voice) failed. Surfaced in-band so the caller
+   * can still render the text reply and explain the missing media
+   * without losing the conversation. See [InteractMediaError]. */
+  mediaError?: InteractMediaError;
   error?: string;
 }
 
@@ -147,7 +152,30 @@ export interface InteractResponse {
   isEndTurn?: boolean;
   /** Server-authoritative post-write snapshot (see PersistedDynamicContext). */
   persistedDynamicContext?: PersistedDynamicContext;
+  /** Partial-failure descriptor: text was generated successfully but one or
+   * more media calls (image/voice) failed. Surfaced in-band so the caller
+   * can still render the text reply and explain the missing media
+   * without losing the conversation. See [InteractMediaError]. */
+  mediaError?: InteractMediaError;
   error?: string;
+}
+
+/**
+ * Describes a partial-failure during an [interact] / [proactiveInteract]
+ * call: the text reply was generated and returned, but image and/or
+ * voice generation failed (usually because the user ran out of points
+ * mid-turn). Surfaced in-band on the success envelope so callers can
+ * render the text response without losing it to an exception.
+ */
+export interface InteractMediaError {
+  /** Coarse kind so UIs can map to a single user-facing message. */
+  kind: "insufficient-points" | "wallet" | "unknown";
+  /** Backend machine code when available (e.g. "INSUFFICIENT_POINTS"). */
+  code?: string;
+  /** Raw error message, for logs / diagnostics. */
+  message?: string;
+  /** Which media generation calls were affected. */
+  affected: Array<"image" | "voice">;
 }
 
 export interface OngoingSceneState {

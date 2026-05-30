@@ -11,7 +11,10 @@ export class GenericLLMProvider implements BaseLLMProvider {
   ) {}
 
   private get fetchFn(): typeof fetch {
-    return this.fetchImpl ?? fetch;
+    // Bind to `globalThis` so the global `fetch` is not invoked detached
+    // from its Window receiver (which throws "Illegal invocation" in
+    // Chromium-based browsers).
+    return this.fetchImpl ?? fetch.bind(globalThis);
   }
 
   private async fetchTemplate() {

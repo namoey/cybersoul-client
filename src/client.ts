@@ -8,6 +8,7 @@ import {
   InteractRequestType,
   DispatcherIntent,
   InteractResponse,
+  InteractMediaError,
   BaseLLMProvider,
   CharacterState,
   CoreMemory,
@@ -23,6 +24,15 @@ import {
 } from "./types.js";
 import { robustJsonParse } from "./utils/json.utils.js";
 import { GenericLLMProvider } from "./llm.provider.js";
+import {
+  CyberSoulApiError,
+  CyberSoulAuthError,
+  CyberSoulError,
+  CyberSoulInsufficientPointsError,
+  CyberSoulNetworkError,
+  CyberSoulTimeoutError,
+  CyberSoulWalletError,
+} from "./errors.js";
 
 export class CyberSoulClient {
   private config: CyberSoulClientConfig;
@@ -70,7 +80,11 @@ export class CyberSoulClient {
       const timeout = setTimeout(() => controller.abort(), this.requestTimeoutMs);
 
       try {
-        const fetchFn = this.config.fetchImpl ?? fetch;
+        // NOTE: When no custom fetchImpl is provided, fall back to the global
+        // `fetch` bound to `globalThis`. Browsers throw "Illegal invocation"
+        // if the global `fetch` is invoked while detached from its Window
+        // receiver (e.g. via a captured reference).
+        const fetchFn = this.config.fetchImpl ?? fetch.bind(globalThis);
         const response = await fetchFn(url, {
           ...options,
           headers,
@@ -85,11 +99,20 @@ export class CyberSoulClient {
         return response;
       } catch (error) {
         if (error instanceof Error && error.name === "AbortError") {
-          lastError = new Error(
-            `Request timed out after ${this.requestTimeoutMs}ms: ${method} ${endpoint}`,
+          lastError = new CyberSoulTimeoutError(
+            endpoint,
+            method,
+            this.requestTimeoutMs,
           );
         } else {
-          lastError = error;
+          lastError = new CyberSoulNetworkError(
+            endpoint,
+            method,
+            error instanceof Error
+              ? `Network request failed: ${method} ${endpoint}: ${error.message}`
+              : `Network request failed: ${method} ${endpoint}`,
+            { cause: error },
+          );
         }
         if (attempt >= retryLimit) {
           throw lastError;
@@ -99,14 +122,51 @@ export class CyberSoulClient {
       }
     }
 
+    // Defensive: the loop above either returns a Response, throws the
+    // wrapped network error, or continues to the next attempt. Reaching
+    // this point means the retry budget was exhausted without ever
+    // populating `lastError` (logically unreachable, but TypeScript
+    // cannot prove that).
     throw lastError instanceof Error
       ? lastError
-      : new Error("Request failed unexpectedly");
+      : new CyberSoulNetworkError(
+          endpoint,
+          method,
+          `Request failed unexpectedly: ${method} ${endpoint}`,
+        );
   }
 
   private async fetchRemoteState() {
-    const res = await this.apiFetch("/api/v1/cyber-soul/state");
-    if (!res.ok) throw new Error("Failed to fetch character state");
+    const endpoint = "/api/v1/cyber-soul/state";
+    const res = await this.apiFetch(endpoint);
+    if (!res.ok) {
+      let body: unknown;
+      try {
+        body = await res.json();
+      } catch {
+        body = undefined;
+      }
+      const detail =
+        (body && typeof body === "object" && "error" in body
+          ? String((body as { error: unknown }).error)
+          : undefined) ?? `HTTP ${res.status}`;
+      if (res.status === 401 || res.status === 403) {
+        throw new CyberSoulAuthError(
+          endpoint,
+          "GET",
+          res.status,
+          `Character credential rejected by backend (${detail}). The character may have been deleted.`,
+          body,
+        );
+      }
+      throw new CyberSoulApiError(
+        endpoint,
+        "GET",
+        res.status,
+        `Failed to fetch character state: ${detail}`,
+        body,
+      );
+    }
     const json = await res.json();
     return json.data;
   }
@@ -141,19 +201,61 @@ export class CyberSoulClient {
   }
 
   private async generatePrimitive(type: "image" | "voice", payload: any) {
-    const res = await this.apiFetch(`/api/v1/cyber-soul/${type}/generate`, {
+    const endpoint = `/api/v1/cyber-soul/${type}/generate`;
+    const res = await this.apiFetch(endpoint, {
       method: "POST",
       body: JSON.stringify(payload),
     });
     if (!res.ok) {
-      let errData;
+      let errData: any;
       try {
         errData = await res.json();
       } catch (e) {}
       const msg = errData?.message || errData?.error || `Status ${res.status}`;
-      const err = new Error(`Failed to generate ${type}: ${msg}`);
-      (err as any).code = errData?.code || "UNKNOWN_ERROR";
-      throw err;
+      const code: string = errData?.code || "UNKNOWN_ERROR";
+      const detailedMessage = `Failed to generate ${type}: ${msg}`;
+
+      if (res.status === 402 || code === "INSUFFICIENT_POINTS") {
+        throw new CyberSoulInsufficientPointsError(
+          endpoint,
+          "POST",
+          res.status,
+          detailedMessage,
+          errData,
+          code,
+        );
+      }
+      if (code === "WALLET_DEDUCTION_ERROR") {
+        throw new CyberSoulWalletError(
+          endpoint,
+          "POST",
+          res.status,
+          detailedMessage,
+          errData,
+          code,
+        );
+      }
+      if (res.status === 401 || res.status === 403) {
+        throw new CyberSoulAuthError(
+          endpoint,
+          "POST",
+          res.status,
+          detailedMessage,
+          errData,
+        );
+      }
+      const apiErr = new CyberSoulApiError(
+        endpoint,
+        "POST",
+        res.status,
+        detailedMessage,
+        errData,
+      );
+      // Preserve the legacy duck-typed `code` field so existing callers
+      // that branch on `e.code` (including this SDK's own `interact()`
+      // mediaTasks catch block) keep working unchanged.
+      (apiErr as any).code = code;
+      throw apiErr;
     }
     return res.json();
   }
@@ -583,6 +685,39 @@ ${isProactive
       .trim();
   }
 
+  /**
+   * Build the in-band `mediaError` envelope from the first typed media
+   * failure captured during `interact()` / `proactiveInteract()`. Keeps
+   * the conversion in one place so both call sites stay consistent and
+   * the SDK never re-throws on a partial media failure once the text
+   * reply is already in flight.
+   */
+  private buildMediaError(
+    err: CyberSoulError,
+    affected: Array<"image" | "voice">,
+  ): InteractMediaError {
+    if (err instanceof CyberSoulInsufficientPointsError) {
+      return {
+        kind: "insufficient-points",
+        code: err.code,
+        message: err.message,
+        affected,
+      };
+    }
+    if (err instanceof CyberSoulWalletError) {
+      return {
+        kind: "wallet",
+        message: err.message,
+        affected,
+      };
+    }
+    return {
+      kind: "unknown",
+      message: err.message,
+      affected,
+    };
+  }
+
   private formatHistoryEntries(history: HistoryEntry[], userName: string, agentName: string, promptDirective: string = ""): string {
     const contextLines: string[] = [];
 
@@ -813,6 +948,30 @@ Note: Always include "isEndTurn". If "imageParams", "voiceArgs", "triggerEvent",
       let finalAudioUrl: string | undefined = undefined;
       let finalAudioMediaId: string | undefined = undefined;
       let finalDurationSec: number | undefined = undefined;
+      // Partial-failure capture: text was already produced and emitted
+      // via [onTextReady], so a wallet / insufficient-points failure on
+      // image or voice MUST NOT abort the whole turn. We collect the
+      // affected modalities + first typed error and surface them in-band
+      // through `InteractResponse.mediaError`. The caller (MessageBus /
+      // UI) decides how to message the user without losing the reply.
+      const mediaErrorAffected: Array<"image" | "voice"> = [];
+      let firstMediaError: CyberSoulError | null = null;
+      const captureMediaError = (
+        modality: "image" | "voice",
+        e: unknown,
+      ): void => {
+        if (!(e instanceof CyberSoulError)) return;
+        if (
+          !(e instanceof CyberSoulInsufficientPointsError) &&
+          !(e instanceof CyberSoulWalletError)
+        ) {
+          return;
+        }
+        if (!mediaErrorAffected.includes(modality)) {
+          mediaErrorAffected.push(modality);
+        }
+        if (!firstMediaError) firstMediaError = e;
+      };
 
       // Output Event Trigger
       if (parsedIntent.triggerEvent) {
@@ -863,8 +1022,13 @@ Note: Always include "isEndTurn". If "imageParams", "voiceArgs", "triggerEvent",
               finalImageMediaId = res.id;
             })
             .catch((e: any) => {
-              console.error("[CyberSoulClient] Image generation failed:", e);
-              if (e.code === 'INSUFFICIENT_POINTS' || e.code === 'WALLET_DEDUCTION_ERROR') throw e;
+              if (
+                !(e instanceof CyberSoulInsufficientPointsError) &&
+                !(e instanceof CyberSoulWalletError)
+              ) {
+                console.error("[CyberSoulClient] Image generation failed:", e);
+              }
+              captureMediaError("image", e);
             })
         );
       }
@@ -895,8 +1059,13 @@ Note: Always include "isEndTurn". If "imageParams", "voiceArgs", "triggerEvent",
               finalDurationSec = res.duration_sec;
             })
             .catch((e: any) => {
-              console.error("[CyberSoulClient] Voice generation failed:", e);
-              if (e.code === 'INSUFFICIENT_POINTS' || e.code === 'WALLET_DEDUCTION_ERROR') throw e;
+              if (
+                !(e instanceof CyberSoulInsufficientPointsError) &&
+                !(e instanceof CyberSoulWalletError)
+              ) {
+                console.error("[CyberSoulClient] Voice generation failed:", e);
+              }
+              captureMediaError("voice", e);
             })
         );
       }
@@ -910,6 +1079,10 @@ Note: Always include "isEndTurn". If "imageParams", "voiceArgs", "triggerEvent",
       // practice the PATCH usually resolves before media generation.
       const persistedDynamicContext =
         (await persistedStatePromise) ?? undefined;
+
+      const mediaError = firstMediaError
+        ? this.buildMediaError(firstMediaError, mediaErrorAffected)
+        : undefined;
 
       return {
         status: "success",
@@ -926,8 +1099,17 @@ Note: Always include "isEndTurn". If "imageParams", "voiceArgs", "triggerEvent",
         userAnalysis: parsedIntent.userAnalysis,
         isEndTurn: parsedIntent.isEndTurn,
         persistedDynamicContext,
+        mediaError,
       };
     } catch (error: any) {
+      // Typed SDK errors (insufficient points, wallet failure, auth, etc.)
+      // are part of the public contract — let callers branch on
+      // `instanceof` instead of string-sniffing a generic status:"error"
+      // envelope. Only truly-unexpected throws fall back to the legacy
+      // envelope so we don't break callers that don't yet handle throws.
+      if (error instanceof CyberSoulError) {
+        throw error;
+      }
       console.error("[CyberSoulClient] Interface Error: ", error);
       return {
         status: "error",
@@ -1034,170 +1216,178 @@ CRITICAL: Output MUST be ONLY valid JSON with no markdown block wrappers. Do NOT
 
   /**
    * Generates a proactive message when the user hasn't responded.
-   * Safely prevents spamming, and adjusts its approach based on relationship dynamics.
+   *
+   * Design:
+   *  - Code owns ONE objective rule: don't spam (cap consecutive un-replied
+   *    messages). Everything else is a social judgment.
+   *  - The LLM owns the social judgment — given full character context
+   *    (stage, temperature, traits, ongoing scene, time since last
+   *    interaction, recent history), it answers a single question:
+   *    "Would I, as this person right now, actually reach out?"
+   *    Skip is the default; speaking is the exception.
    */
   public async proactiveInteract(params: ProactiveParams): Promise<ProactiveResponse> {
     try {
-      // 1. Cold Interaction Protection (Logic-based fallback)
+      // 1. Spam guard (the only hard-coded gate). Counts assistant messages
+      //    since the last user reply; bails out if the user has clearly
+      //    stopped responding.
       const history = params.history || [];
       const maxUnreplied = params.maxUnreplied ?? 2;
-      
+
       let consecutiveProactive = 0;
-      // Start from the most recent message
       for (let i = history.length - 1; i >= 0; i--) {
         const msg = history[i];
-        if (msg.role === 'user') {
-            break; // User responded, streak broken
-        }
-        if (msg.role === 'assistant') {
-            consecutiveProactive++;
-        }
+        if (msg.role === "user") break;
+        if (msg.role === "assistant") consecutiveProactive++;
       }
-
       if (consecutiveProactive >= maxUnreplied) {
-        return { 
-            status: "skipped", 
-            reason: `User is busy. ${consecutiveProactive} consecutive proactive messages ignored.` 
+        return {
+          status: "skipped",
+          reason: `Spam guard: ${consecutiveProactive} consecutive un-replied messages already sent.`,
         };
       }
 
-      // 2. Fetch current character state
+      // 2. Fetch state. baseContext below already includes stage,
+      //    temperature, traits, ongoing scene, active/next event, current
+      //    time, and lastInteractionAt — the LLM has everything it needs to
+      //    make the social call without us restating it.
       const [state, availableOutfits] = await Promise.all([
         this.fetchRemoteState(),
-        this.getWardrobePromptStr()
+        this.getWardrobePromptStr(),
       ]);
 
-      // 3. Evaluate behavioral approach based on relationship and personality
-      const dyn = state.dynamic_context || {};
-      const stage = state.relationship_stage || "STRANGER";
-      const temperature = dyn.temperature ?? 0;
-      const userTraits = state.user_codex?.psychological?.traits?.join(", ") || "";
-
-      let interrogationStrategy = "Do not ask 'are you there?' or 'why aren't you answering?'. Just share your current status, a passing thought, complain whimsically, or tease the user naturally like a real partner.";
-      
-      if (stage === "PARTNER" || (stage === "INTIMATE" && temperature > 70)) {
-          // PARTNER (>85) or High INTIMATE (>70)
-          interrogationStrategy = "Because you are deeply intimate and highly affectionate, you MISS them. You MAY organically 'interrogate' or pout playfully about why they are ignoring you (e.g., 'Are you too busy for me?', 'Still ignoring your girl?'). Act like a real, slightly needy/attached partner.";
-      } else if (stage === "INTIMATE" || stage === "WARM") {
-          // Low INTIMATE (60-70) or WARM (40-60)
-          interrogationStrategy = "Because you are close but currently feeling neglected or cold, you notice they are ignoring you. You MAY be passive-aggressive or cross-examine them coldly (e.g., 'So we're just not talking today?', 'Fine, keep ignoring me.').";
-      } else if (stage === "COLD" || stage === "ACQUAINTANCE" || stage === "STRANGER") {
-         // COLD (<40)
-         interrogationStrategy = "You are distant. Do NOT double-text with neediness. If you must speak, make it a detached observation or a cold administrative remark.";
-      }
-
-      // History/Context awareness prompt
-      const historyAwarenessPrompt = `CRITICAL CONTEXT AWARENESS: Read the CHAT HISTORY above carefully. Remember that YOU sent the last message. Your new message MUST feel organically connected to the flow of what you two were previously talking about, or naturally bring up a known event/topic from your [CORE MEMORY]. Do not sound like a robot reading a log.`;
-
-      // 4. Build a Proactive-specific System Prompt
       const baseContext = this.buildStateContextPrompt(state, true);
       const types = this.normalizeRequestTypes(params.requestTypes);
       const requestedOthers = types.filter(
-        (t) => t !== InteractRequestType.AUTO && t !== InteractRequestType.TEXT
+        (t) => t !== InteractRequestType.AUTO && t !== InteractRequestType.TEXT,
       );
-      
-      // Determine modalities (reusing logic from interact)
-      let modalitiesInstruction = "You are initiating conversation without a preceding user message.\\n";
-      if (requestedOthers.includes(InteractRequestType.IMAGE)) {
-        modalitiesInstruction += "  - Include 'imageParams' for visual/photo moments. CRITICAL POLICY: NEVER send pictures to strangers! If Stage is STRANGER or COLD, or Familiarity is very low (< 10), ALWAYS set 'imageParams' to null.\\n";
-      } else {
-        modalitiesInstruction += "  - ALWAYS set 'imageParams' to null.\\n";
-      }
+      const imageAllowed = requestedOthers.includes(InteractRequestType.IMAGE);
 
+      // 3. Build the prompt. We deliberately ask ONE coherent question
+      //    framed in-character ("would I text right now?") rather than
+      //    handing the LLM a checklist. The character's own traits,
+      //    relationship state, and recent transcript are the inputs.
       const systemPrompt = `${baseContext}
 
-[PROACTIVE INITIATION TASK]
-The user has NOT spoken to you recently. You sent the last message in the chat history, and they haven't replied. You are deciding to follow up proactively.
-If you decide that based on your current mood and the relationship stage it's better not to send a message right now (e.g. you are cold and giving them space), you can skip this proactive message by setting "shouldSkipProactive" to true.
-${interrogationStrategy}
-${historyAwarenessPrompt}
-Consider the user's known traits (${userTraits}) when choosing how to act. Need to keep it strictly under 2-3 sentences max.
+[PROACTIVE OPPORTUNITY]
+Time has passed since the last message in [CHAT HISTORY] and the user has not replied. You have an OPPORTUNITY (not an obligation) to send them a message. Decide, in character, whether you would actually do that.
+
+[HOW TO DECIDE — THINK LIKE THE PERSON YOU ARE]
+Real humans rarely send unprompted messages. Most of the time, silence is the right answer. Reach out ONLY if a real person with YOUR personality, in YOUR relationship to this user, at THIS moment, would genuinely feel moved to text.
+
+Reasons NOT to reach out (set "shouldSkipProactive": true):
+  - The last exchange ended on a note that closes the door — a farewell, a brush-off, a fight, a "talk later", an explicit dismissal — from either side. If YOU pushed them away last turn (because of your traits or a fight), staying quiet IS the in-character choice; flipping to friendly now makes you look bipolar.
+  - Your relationship is too distant for unsolicited contact (e.g. STRANGER, COLD) or your current mood is too low to want to reach out.
+  - Too little time has passed since the last message for a follow-up to feel natural. Use the time gap shown in [CHAT HISTORY] — minutes after the last turn is almost always too soon.
+  - There is no genuine reason to text — no shared thread, no event, no thought that would actually push a real person to pick up the phone.
+  - It's the wrong time of day for this relationship.
+
+When in doubt: SKIP. The bar for reaching out is high.
+
+[IF YOU DO DECIDE TO REACH OUT]
+Speak strictly in character — your traits, communication style, and current mood dictate the tone. Do NOT default to needy/cheerful unless that's who you are. Connect naturally to the last topic or to your current scene/event. Keep it to 2-3 short sentences. Never ask "are you there?" or "why aren't you answering?".
 
 Available Wardrobe Outfits:
 ${availableOutfits}
 
-${modalitiesInstruction}
-You MUST output ONLY a valid JSON object matching exactly this structure:
+Modalities:
+  - 'textResponse' is required when you proceed.
+  - ${imageAllowed
+    ? "'imageParams' may be included only if sending a photo right now would feel natural for this character in this relationship — otherwise set null. Do not attach a photo just because you can."
+    : "ALWAYS set 'imageParams' to null."}
+  - ALWAYS set 'voiceArgs' to null.
+
+Output ONLY a valid JSON object matching exactly this structure (no markdown wrappers).
+If "shouldSkipProactive" is true, set "skipReason" to one short sentence and set every other field to null.
+If "shouldSkipProactive" is false, "textResponse" is required and "stateUpdate" must be provided; include "ongoingScene" only if your scene/outfit actually changed, otherwise omit it.
 {
   "shouldSkipProactive": false,
-  "skipReason": "(Optional. Reason for skipping if shouldSkipProactive is true)",
+  "skipReason": null,
   "actionText": "(Scene descriptions, physical actions, expressions, inner feelings) ONLY.",
   "textResponse": "Spoken dialogue ONLY.",
-  "stateUpdate": { "temperatureDelta": 1, "ongoingScene": { "scene": "...", "outfit": "..." } },
-  ${this.getImageSchemaParams(requestedOthers.includes(InteractRequestType.IMAGE))},
+  "stateUpdate": { "temperatureDelta": 0, "ongoingScene": { "scene": "...", "outfit": "..." } },
+  ${this.getImageSchemaParams(imageAllowed)},
   "voiceArgs": null
 }`;
 
-      const transcript = params.history && params.history.length > 0 ? this.buildHistoryTranscript(params.history, state) : "";
-      const harnessContext = params.localContext ? `[ADDITIONAL SCENE CONTEXT]\n${params.localContext}\n\n` : "";
+      const transcript = params.history && params.history.length > 0
+        ? this.buildHistoryTranscript(params.history, state)
+        : "";
+      const harnessContext = params.localContext
+        ? `[ADDITIONAL SCENE CONTEXT]\n${params.localContext}\n\n`
+        : "";
 
       const promptMessages = [
         { role: "system", content: systemPrompt },
         {
           role: "user",
-          content: `${harnessContext}${transcript}\n[TRIGGER PROACTIVE MESSAGE]\nBased on your active event and environment, send a new message to the user.\n\nCRITICAL: Output ONLY valid JSON matching the schema. DO NOT wrap the JSON in \`\`\`json.`
-        }
+          content: `${harnessContext}${transcript}\n[DECIDE NOW]\nWould you, as this character, actually send a message right now? Answer in the JSON schema above.`,
+        },
       ];
 
-      // 5. Generate with LLM using a confident temperature
-      const rawLlmResponse = await this.llm.generate(promptMessages, 800, 0.7);
-      
-      let parsedIntent: DispatcherIntent;
-      try {
-        parsedIntent = robustJsonParse<DispatcherIntent>(rawLlmResponse, "Proactive fallback");
-      } catch (e) {
-        parsedIntent = { textResponse: rawLlmResponse.replace(/^[\`\s]+|[\`\s]+$/g, "").trim() };
-      }
+      // 4. LLM decides. Lower temperature than `interact` because this is a
+      //    judgment call, not creative reply.
+      const rawLlmResponse = await this.llm.generate(promptMessages, 800, 0.5);
+
+      // Fail fast on parse error. A proactive message is opt-in by design;
+      // if the LLM produced unparseable output we'd rather skip than ship
+      // raw scaffolding to the user.
+      const parsedIntent = robustJsonParse<DispatcherIntent>(rawLlmResponse, "Proactive fallback");
 
       if (parsedIntent.shouldSkipProactive) {
         return {
           status: "skipped",
-          reason: parsedIntent.skipReason || "Character decided to skip proactive message based on mood/stage."
+          reason: parsedIntent.skipReason || "Character chose not to reach out.",
         };
       }
 
-      // Update Remote state if needed (capture promise for authoritative
-      // server snapshot — see notes in interact()).
+      if (typeof parsedIntent.textResponse !== "string" || parsedIntent.textResponse.trim().length === 0) {
+        return {
+          status: "skipped",
+          reason: "LLM produced no textResponse (treated as implicit skip).",
+        };
+      }
+
+      // 5. Persist state and optionally generate image, in parallel.
       let persistedStatePromise: Promise<PersistedDynamicContext | null> =
         Promise.resolve(null);
       if (parsedIntent.stateUpdate) {
-        persistedStatePromise = this._updateDynamicContextInternal(
-          parsedIntent.stateUpdate,
-        );
+        persistedStatePromise = this._updateDynamicContextInternal(parsedIntent.stateUpdate);
       }
 
-      const resolvedTextResponse =
-        typeof parsedIntent.textResponse === "string" &&
-        parsedIntent.textResponse.trim().length > 0
-          ? parsedIntent.textResponse
-          : "...";
-
-      // Fire text ready callback if provided
-      if (params.onTextReady && (resolvedTextResponse || parsedIntent.actionText)) {
-        params.onTextReady(resolvedTextResponse, parsedIntent.actionText, {
+      if (params.onTextReady) {
+        params.onTextReady(parsedIntent.textResponse, parsedIntent.actionText, {
           stateUpdate: parsedIntent.stateUpdate,
-          userAnalysis: parsedIntent.userAnalysis,
-          isEndTurn: parsedIntent.isEndTurn,
-          triggerEvent: parsedIntent.triggerEvent,
-          likePreviousPicture: parsedIntent.likePreviousPicture,
         });
       }
-      
-      // Handle Optional Media (Image only for proactive to save compute normally, but you can extend)
-      let finalImageUrl: string | undefined = undefined;
-      let finalImageMediaId: string | undefined = undefined;
+
+      let finalImageUrl: string | undefined;
+      let finalImageMediaId: string | undefined;
+      let proactiveMediaError: CyberSoulError | null = null;
+      const proactiveAffected: Array<"image" | "voice"> = [];
       if (parsedIntent.imageParams) {
-          try {
-             const res = await this.generatePrimitive("image", parsedIntent.imageParams);
-             finalImageUrl = res.image_url;
-             finalImageMediaId = res.id;
-          } catch(e) {
-             console.error("[CyberSoulClient] Proactive Image generation failed:", e);
+        try {
+          const res = await this.generatePrimitive("image", parsedIntent.imageParams);
+          finalImageUrl = res.image_url;
+          finalImageMediaId = res.id;
+        } catch (e) {
+          if (
+            e instanceof CyberSoulInsufficientPointsError ||
+            e instanceof CyberSoulWalletError
+          ) {
+            proactiveMediaError = e;
+            proactiveAffected.push("image");
+          } else {
+            console.error("[CyberSoulClient] Proactive Image generation failed:", e);
           }
+        }
       }
 
-      const persistedDynamicContext =
-        (await persistedStatePromise) ?? undefined;
+      const persistedDynamicContext = (await persistedStatePromise) ?? undefined;
+
+      const proactiveMediaErrorEnv = proactiveMediaError
+        ? this.buildMediaError(proactiveMediaError, proactiveAffected)
+        : undefined;
 
       return {
         status: "success",
@@ -1207,9 +1397,13 @@ You MUST output ONLY a valid JSON object matching exactly this structure:
         imageMediaId: finalImageMediaId,
         stateUpdate: parsedIntent.stateUpdate,
         persistedDynamicContext,
+        mediaError: proactiveMediaErrorEnv,
       };
-
     } catch (error: any) {
+      // Mirror `interact()`: preserve typed SDK errors for the caller.
+      if (error instanceof CyberSoulError) {
+        throw error;
+      }
       console.error("[CyberSoulClient] Proactive Interact Error: ", error);
       return { status: "error", error: error.message };
     }

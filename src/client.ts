@@ -19,6 +19,7 @@ import {
   HistoryEntry,
   OngoingSceneState,
   LikedPicture,
+  OutfitGiftedPayload,
   PersistedDynamicContext,
   SupportedLLMModel,
 } from "./types.js";
@@ -30,6 +31,7 @@ import {
   CyberSoulError,
   CyberSoulInsufficientPointsError,
   CyberSoulNetworkError,
+  CyberSoulSensitiveContentError,
   CyberSoulTimeoutError,
   CyberSoulWalletError,
 } from "./errors.js";
@@ -235,6 +237,16 @@ export class CyberSoulClient {
           code,
         );
       }
+      if (code === "E005") {
+        throw new CyberSoulSensitiveContentError(
+          endpoint,
+          "POST",
+          res.status,
+          detailedMessage,
+          errData,
+          code,
+        );
+      }
       if (res.status === 401 || res.status === 403) {
         throw new CyberSoulAuthError(
           endpoint,
@@ -384,6 +396,41 @@ export class CyberSoulClient {
     return { elapsedMs, elapsedMins, elapsedHours, elapsedDays, elapsedYears, displayStr };
   }
 
+  /**
+   * Calculate time period from a timestamp.
+   * Pre-computes morning/afternoon/evening to reduce LLM cognitive load.
+   */
+  private getTimePeriodInfo(timeMs: number): { hour: number; period: string } {
+    const date = new Date(timeMs);
+    const hour = parseInt(
+      date.toLocaleString("zh-CN", {
+        timeZone: "Asia/Shanghai",
+        hour: "2-digit",
+        hour12: false,
+      }).split(":")[0]
+    );
+
+    let period: string;
+
+    if (hour >= 6 && hour < 9) {
+      period = "Early Morning";
+    } else if (hour >= 9 && hour < 12) {
+      period = "Late Morning";
+    } else if (hour >= 12 && hour < 13) {
+      period = "Noon";
+    } else if (hour >= 13 && hour < 18) {
+      period = "Afternoon";
+    } else if (hour >= 18 && hour < 19) {
+      period = "Evening";
+    } else if (hour >= 19 && hour < 23) {
+      period = "Night";
+    } else {
+      period = "Late Night";
+    }
+
+    return { hour, period };
+  }
+
   private buildStateContextPrompt(
     state: CharacterState,
     isProactive: boolean = false
@@ -407,8 +454,21 @@ Interaction Boundaries: ${state.interaction_boundaries || "None"}`);
 
     // [2] SITUATIONAL CONTEXT
     const currentTimeMs = state.current_time ? new Date(state.current_time).getTime() : Date.now();
+    const timePeriod = this.getTimePeriodInfo(currentTimeMs);
+    const currentDate = new Date(currentTimeMs);
+    const timeStr = currentDate.toLocaleString("en-US", {
+      timeZone: "Asia/Shanghai",
+      weekday: "long",
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    });
     contextParts.push(`\n[SITUATIONAL CONTEXT]
-Current time: ${new Date(currentTimeMs).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}`);
+Current time: ${timeStr} (${timePeriod.period})`);
     
     if (dyn.lastInteractionAt) {
       contextParts.push(`Last interaction at: ${new Date(dyn.lastInteractionAt).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}`);
@@ -582,11 +642,15 @@ ${isProactive
   }
 
   private getTriggerEventPolicyPrompt(): string {
-    return `- Include 'triggerEvent' only if the VERY LAST USER MESSAGE proposes a new activity/hangout AND you accept the invitation, explicitly requests an outfit change AND you agree, or proposes intimate/romantic actions AND you agree; ignore older history. DO NOT include it if you decline or reject the proposal. ${this.getOutfitSelectionPrompt()}`;
+    return `- Include 'triggerEvent' only if the VERY LAST USER MESSAGE proposes a new activity/hangout AND you accept the invitation, explicitly requests an outfit change AND you agree, or proposes intimate/romantic actions AND you agree; ignore older history. DO NOT include it if you decline or reject the proposal.
+    REPETITION GATE (hard): Prior assistant turns that already auto-triggered an event are tagged with a [Triggered Event: ...] marker in '[CHAT HISTORY]'. If such a marker already exists for the SAME activity the VERY LAST USER MESSAGE is referring to (e.g. it is just acknowledging, hurrying, confirming, or continuing an already-accepted outing), set 'triggerEvent' to null. Only emit a NEW 'triggerEvent' when the user proposes a genuinely DIFFERENT activity that has not already been triggered. Do NOT re-trigger the same event just because the conversation continues. ${this.getOutfitSelectionPrompt()}`;
   }
 
   private getOutfitAcquisitionPolicyPrompt(): string {
-    return `- Outfit acquisition (VERY LAST USER MESSAGE only): set giftOutfit for gift/buy/add-clothes intent; otherwise null. giftOutfit format: { "descriptionText": "short outfit description" }.`;
+    return `- Outfit acquisition (giftOutfit): set 'giftOutfit' to { "descriptionText": "short outfit description" } when a genuinely NEW outfit (one that is NOT already in the Available Wardrobe) is obtained THIS turn, triggered by EITHER:
+    (a) USER-GIFTED: the VERY LAST USER MESSAGE expresses gift/buy/add-clothes intent for you (e.g. "I bought you a dress", "here, wear this new outfit", "adding some lingerie to your closet").
+    (b) CHARACTER-ACQUIRED: the conversation or active event naturally leads YOU to acquire a new outfit you don't already own (e.g. you went shopping, received/made clothes, or the scene requires changing into a brand-new outfit that is absent from your Available Wardrobe).
+  Keep 'descriptionText' to a concise English-or-matching-language description of the single new outfit. Otherwise set 'giftOutfit' to null. Do NOT fire it for outfits already present in the Available Wardrobe, and do NOT fire it just because you changed into an existing outfit.`;
   }
 
   private getEventSchemaParams(userName?: string): string {
@@ -711,11 +775,66 @@ ${isProactive
         affected,
       };
     }
+    if (err instanceof CyberSoulSensitiveContentError) {
+      return {
+        kind: "sensitive-content",
+        code: err.code,
+        message: err.message,
+        affected,
+      };
+    }
     return {
       kind: "unknown",
       message: err.message,
       affected,
     };
+  }
+
+  /**
+   * Shared giftOutfit handler for `interact()` / `proactiveInteract()`.
+   * Validates the LLM's `giftOutfit` intent, performs the wardrobe write,
+   * fires the `onOutfitGifted` callback, and resolves to the
+   * [OutfitGiftedPayload] (or `undefined` when there was nothing to gift
+   * or the write failed). Failures are swallowed (logged) so a wardrobe
+   * hiccup never aborts the chat turn.
+   */
+  private async processGiftOutfit(
+    giftOutfitIntent: DispatcherIntent["giftOutfit"],
+    onOutfitGifted?: (payload: OutfitGiftedPayload) => void,
+  ): Promise<OutfitGiftedPayload | undefined> {
+    if (
+      !giftOutfitIntent ||
+      typeof giftOutfitIntent !== "object" ||
+      typeof giftOutfitIntent.descriptionText !== "string" ||
+      giftOutfitIntent.descriptionText.trim().length === 0
+    ) {
+      return undefined;
+    }
+
+    const outfitDescription = giftOutfitIntent.descriptionText.trim();
+    try {
+      const count = await this.giftOutfit(outfitDescription);
+      const giftedOutfit: OutfitGiftedPayload = {
+        descriptionText: outfitDescription,
+      };
+      if (typeof count === "number") {
+        giftedOutfit.count = count;
+      }
+      if (onOutfitGifted) {
+        try {
+          onOutfitGifted(giftedOutfit);
+        } catch (cbErr) {
+          console.warn(
+            "[CyberSoulClient] onOutfitGifted callback threw:",
+            cbErr,
+          );
+        }
+      }
+      return giftedOutfit;
+    } catch (e) {
+      console.error("[CyberSoulClient] giftOutfit failed:", e);
+      return undefined;
+    }
   }
 
   private formatHistoryEntries(history: HistoryEntry[], userName: string, agentName: string, promptDirective: string = ""): string {
@@ -738,7 +857,8 @@ ${isProactive
       const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
       const action = msg.actionText ? ` (${msg.actionText})` : "";
       const media = msg.mediaHint ? ` [${msg.mediaHint}]` : "";
-      contextLines.push(`${speaker}:${action} ${content}${media}`);
+      const event = msg.eventHint ? ` [Triggered Event: ${msg.eventHint}]` : "";
+      contextLines.push(`${speaker}:${action} ${content}${media}${event}`);
     }
 
     return contextLines.join('\n');
@@ -791,7 +911,14 @@ ${isProactive
   - 'textResponse' is ALWAYS REQUIRED.
   - The modalities you are ALLOWED to dynamically include: ${requestedOthers.length > 0 ? requestedOthers.join(", ") : "None (Only text is allowed)"}. Do not include other modalities.`;
         if (requestedOthers.includes(InteractRequestType.IMAGE)) {
-          modalitiesInstruction += `\n  - Include 'imageParams' for visual/photo requests or key visual moments during active events; explicitly describe current clothing/exposure in image fields. CRITICAL POLICY: Guard your privacy! If the user feels like a stranger (low Familiarity) AND your Mood/Temperature is cool/distant (< 50), ALWAYS set 'imageParams' to null and naturally decline. If your Temperature is warm/high (>= 50), you may choose to share a picture if requested or if it fits naturally, even if you just met.`;
+          modalitiesInstruction += `\n  - IMAGE POLICY: The DEFAULT is to set 'imageParams' to null. Sending a picture is the EXCEPTION, not the norm. Real people do not send a photo every time they reply.
+    Only set 'imageParams' to a non-null object when AT LEAST ONE of these triggers fires for the VERY LAST USER MESSAGE:
+      (a) The user EXPLICITLY asks for a photo / selfie / picture this turn.
+      (b) A genuine NEW visual moment just happened this turn — i.e. a clearly new scene, new location, new outfit, or a distinctly new physical pose/expression that was NOT already shown in any previous turn's image.
+      (c) An active event JUST started or just hit a visually distinct new beat.
+    REPETITION GATE (hard): Prior assistant turns that already carried a picture are tagged with a [Sent Image] marker in '[CHAT HISTORY]'. If at least one prior assistant turn has a [Sent Image] marker AND the current scene/outfit/pose matches the 'Last Known Scene' line (i.e. nothing visually new has happened since), set 'imageParams' to null. Do NOT send near-duplicate pictures just because mood is high — high Temperature is NOT a trigger by itself.
+    PRIVACY GATE: Even when a trigger fires, if the user feels like a stranger (low Familiarity) OR your Mood/Temperature is cool/distant (< 50), set 'imageParams' to null and naturally decline. Temperature and Familiarity only GATE permission when a trigger has already fired; they never justify an image on their own.
+    When you do include 'imageParams', explicitly describe current clothing/exposure in the image fields.`;
         } else {
           modalitiesInstruction += `\n  - ALWAYS set 'imageParams' to null. If the user explicitly asks for a picture, FIRMLY decline naturally in your 'textResponse' (e.g., say you absolutely cannot right now). NEVER pretend to send one, and NEVER give in no matter how many times they ask.`;
         }
@@ -924,11 +1051,46 @@ Note: Always include "isEndTurn". If "imageParams", "voiceArgs", "triggerEvent",
         );
       }
 
+      // Fire `onStateReady` the moment the dynamic-context PATCH resolves
+      // (or immediately, when no state update was emitted). This is
+      // independent of media generation, so the UI can stop showing
+      // "updating…" on temperature / relationship stage well before the
+      // (potentially slow) image task finishes. Errors are swallowed:
+      // an authoritative snapshot is best-effort, the optimistic delta
+      // already applied client-side is the fallback.
+      if (params.onStateReady) {
+        const stateReadyCb = params.onStateReady;
+        persistedStatePromise
+          .then((persisted) => {
+            try {
+              stateReadyCb(persisted ?? {});
+            } catch (cbErr) {
+              console.warn("[CyberSoulClient] onStateReady callback threw:", cbErr);
+            }
+          })
+          .catch(() => {
+            // PATCH failed; still signal LLM-phase complete with an empty snapshot.
+            try {
+              stateReadyCb({});
+            } catch (cbErr) {
+              console.warn("[CyberSoulClient] onStateReady callback threw:", cbErr);
+            }
+          });
+      }
+
         const resolvedTextResponse =
           typeof parsedIntent.textResponse === "string" &&
           parsedIntent.textResponse.trim().length > 0
             ? parsedIntent.textResponse
             : params.userMessage;
+
+        // Pre-compute the voice-dispatch decision so we can tell
+        // `onTextReady` consumers up front whether a voice bubble is on
+        // the way. Mirrors the `shouldGenerateVoice` gate used below
+        // when scheduling the TTS task — keep the two in sync.
+        const willGenerateVoice =
+          types.includes(InteractRequestType.VOICE) &&
+          (!isAuto || !!parsedIntent.voiceArgs);
 
         // Fire text ready callback if provided
         if (params.onTextReady && (resolvedTextResponse || parsedIntent.actionText)) {
@@ -938,6 +1100,7 @@ Note: Always include "isEndTurn". If "imageParams", "voiceArgs", "triggerEvent",
             isEndTurn: parsedIntent.isEndTurn,
             triggerEvent: parsedIntent.triggerEvent,
             likePreviousPicture: parsedIntent.likePreviousPicture,
+            willGenerateVoice,
           });
         }
 
@@ -948,6 +1111,7 @@ Note: Always include "isEndTurn". If "imageParams", "voiceArgs", "triggerEvent",
       let finalAudioUrl: string | undefined = undefined;
       let finalAudioMediaId: string | undefined = undefined;
       let finalDurationSec: number | undefined = undefined;
+      let giftedOutfit: OutfitGiftedPayload | undefined = undefined;
       // Partial-failure capture: text was already produced and emitted
       // via [onTextReady], so a wallet / insufficient-points failure on
       // image or voice MUST NOT abort the whole turn. We collect the
@@ -963,7 +1127,8 @@ Note: Always include "isEndTurn". If "imageParams", "voiceArgs", "triggerEvent",
         if (!(e instanceof CyberSoulError)) return;
         if (
           !(e instanceof CyberSoulInsufficientPointsError) &&
-          !(e instanceof CyberSoulWalletError)
+          !(e instanceof CyberSoulWalletError) &&
+          !(e instanceof CyberSoulSensitiveContentError)
         ) {
           return;
         }
@@ -997,9 +1162,12 @@ Note: Always include "isEndTurn". If "imageParams", "voiceArgs", "triggerEvent",
         parsedIntent.giftOutfit.descriptionText.trim().length > 0
       ) {
         mediaTasks.push(
-          this.giftOutfit(parsedIntent.giftOutfit.descriptionText.trim()).catch((e) =>
-            console.error("[CyberSoulClient] Auto giftOutfit failed:", e),
-          ),
+          this.processGiftOutfit(
+            parsedIntent.giftOutfit,
+            params.onOutfitGifted,
+          ).then((result) => {
+            if (result) giftedOutfit = result;
+          }),
         );
       }
 
@@ -1020,11 +1188,23 @@ Note: Always include "isEndTurn". If "imageParams", "voiceArgs", "triggerEvent",
             .then((res: any) => {
               finalImageUrl = res.image_url;
               finalImageMediaId = res.id;
+              if (params.onMediaReady && finalImageUrl) {
+                try {
+                  params.onMediaReady({
+                    modality: "image",
+                    url: finalImageUrl,
+                    mediaId: finalImageMediaId,
+                  });
+                } catch (cbErr) {
+                  console.warn("[CyberSoulClient] onMediaReady(image) threw:", cbErr);
+                }
+              }
             })
             .catch((e: any) => {
               if (
                 !(e instanceof CyberSoulInsufficientPointsError) &&
-                !(e instanceof CyberSoulWalletError)
+                !(e instanceof CyberSoulWalletError) &&
+                !(e instanceof CyberSoulSensitiveContentError)
               ) {
                 console.error("[CyberSoulClient] Image generation failed:", e);
               }
@@ -1033,9 +1213,7 @@ Note: Always include "isEndTurn". If "imageParams", "voiceArgs", "triggerEvent",
         );
       }
 
-      const shouldGenerateVoice =
-        types.includes(InteractRequestType.VOICE) &&
-        (!isAuto || !!parsedIntent.voiceArgs);
+      const shouldGenerateVoice = willGenerateVoice;
       if (shouldGenerateVoice) {
         const normalizedVoiceArgs: VoiceArgs =
           parsedIntent.voiceArgs && typeof parsedIntent.voiceArgs === "object"
@@ -1057,11 +1235,24 @@ Note: Always include "isEndTurn". If "imageParams", "voiceArgs", "triggerEvent",
               finalAudioUrl = res.audio_url;
               finalAudioMediaId = res.id;
               finalDurationSec = res.duration_sec;
+              if (params.onMediaReady && finalAudioUrl) {
+                try {
+                  params.onMediaReady({
+                    modality: "voice",
+                    url: finalAudioUrl,
+                    mediaId: finalAudioMediaId,
+                    durationSec: finalDurationSec,
+                  });
+                } catch (cbErr) {
+                  console.warn("[CyberSoulClient] onMediaReady(voice) threw:", cbErr);
+                }
+              }
             })
             .catch((e: any) => {
               if (
                 !(e instanceof CyberSoulInsufficientPointsError) &&
-                !(e instanceof CyberSoulWalletError)
+                !(e instanceof CyberSoulWalletError) &&
+                !(e instanceof CyberSoulSensitiveContentError)
               ) {
                 console.error("[CyberSoulClient] Voice generation failed:", e);
               }
@@ -1100,6 +1291,7 @@ Note: Always include "isEndTurn". If "imageParams", "voiceArgs", "triggerEvent",
         isEndTurn: parsedIntent.isEndTurn,
         persistedDynamicContext,
         mediaError,
+        giftedOutfit,
       };
     } catch (error: any) {
       // Typed SDK errors (insufficient points, wallet failure, auth, etc.)
@@ -1228,22 +1420,41 @@ CRITICAL: Output MUST be ONLY valid JSON with no markdown block wrappers. Do NOT
    */
   public async proactiveInteract(params: ProactiveParams): Promise<ProactiveResponse> {
     try {
-      // 1. Spam guard (the only hard-coded gate). Counts assistant messages
-      //    since the last user reply; bails out if the user has clearly
-      //    stopped responding.
+      // 1. Spam guard (the only hard-coded gate). Counts assistant
+      //    *turns* since the last user reply; bails out if the user has
+      //    clearly stopped responding.
+      //
+      //    A single character response can be emitted as multiple
+      //    HistoryEntry rows (one per modality: text + image + voice).
+      //    The host typically writes them within seconds of each other.
+      //    Counting entries directly would treat one multimodal reply
+      //    as 2-3 "unreplied messages" and trip `maxUnreplied = 2` on
+      //    the very first proactive attempt. Collapse consecutive
+      //    assistant entries whose timestamps are within
+      //    SAME_TURN_WINDOW_MS into a single turn before counting.
       const history = params.history || [];
       const maxUnreplied = params.maxUnreplied ?? 2;
+      const SAME_TURN_WINDOW_MS = 60_000;
 
       let consecutiveProactive = 0;
+      let lastAssistantTs: number | null = null;
       for (let i = history.length - 1; i >= 0; i--) {
         const msg = history[i];
         if (msg.role === "user") break;
-        if (msg.role === "assistant") consecutiveProactive++;
+        if (msg.role !== "assistant") continue;
+        const ts = typeof msg.timestamp === "number" ? msg.timestamp : 0;
+        if (
+          lastAssistantTs === null ||
+          Math.abs(lastAssistantTs - ts) > SAME_TURN_WINDOW_MS
+        ) {
+          consecutiveProactive++;
+        }
+        lastAssistantTs = ts;
       }
       if (consecutiveProactive >= maxUnreplied) {
         return {
           status: "skipped",
-          reason: `Spam guard: ${consecutiveProactive} consecutive un-replied messages already sent.`,
+          reason: `Spam guard: ${consecutiveProactive} consecutive un-replied turns already sent.`,
         };
       }
 
@@ -1296,6 +1507,7 @@ Modalities:
     ? "'imageParams' may be included only if sending a photo right now would feel natural for this character in this relationship — otherwise set null. Do not attach a photo just because you can."
     : "ALWAYS set 'imageParams' to null."}
   - ALWAYS set 'voiceArgs' to null.
+  ${this.getOutfitAcquisitionPolicyPrompt()}
 
 Output ONLY a valid JSON object matching exactly this structure (no markdown wrappers).
 If "shouldSkipProactive" is true, set "skipReason" to one short sentence and set every other field to null.
@@ -1306,6 +1518,7 @@ If "shouldSkipProactive" is false, "textResponse" is required and "stateUpdate" 
   "actionText": "(Scene descriptions, physical actions, expressions, inner feelings) ONLY.",
   "textResponse": "Spoken dialogue ONLY.",
   "stateUpdate": { "temperatureDelta": 0, "ongoingScene": { "scene": "...", "outfit": "..." } },
+  "giftOutfit": { "descriptionText": "Concise description of the newly acquired outfit to add into wardrobe." },
   ${this.getImageSchemaParams(imageAllowed)},
   "voiceArgs": null
 }`;
@@ -1355,11 +1568,39 @@ If "shouldSkipProactive" is false, "textResponse" is required and "stateUpdate" 
         persistedStatePromise = this._updateDynamicContextInternal(parsedIntent.stateUpdate);
       }
 
+      if (params.onStateReady) {
+        const stateReadyCb = params.onStateReady;
+        persistedStatePromise
+          .then((persisted) => {
+            try {
+              stateReadyCb(persisted ?? {});
+            } catch (cbErr) {
+              console.warn("[CyberSoulClient] onStateReady callback threw:", cbErr);
+            }
+          })
+          .catch(() => {
+            try {
+              stateReadyCb({});
+            } catch (cbErr) {
+              console.warn("[CyberSoulClient] onStateReady callback threw:", cbErr);
+            }
+          });
+      }
+
       if (params.onTextReady) {
         params.onTextReady(parsedIntent.textResponse, parsedIntent.actionText, {
           stateUpdate: parsedIntent.stateUpdate,
         });
       }
+
+      // Outfit acquisition: the character may decide, on its own, to pick
+      // up a brand-new outfit while reaching out. Fire-and-capture in
+      // parallel with image generation; surface it via callback + the
+      // final response so upstream can show "New outfit added".
+      const giftOutfitPromise = this.processGiftOutfit(
+        parsedIntent.giftOutfit,
+        params.onOutfitGifted,
+      );
 
       let finalImageUrl: string | undefined;
       let finalImageMediaId: string | undefined;
@@ -1370,10 +1611,22 @@ If "shouldSkipProactive" is false, "textResponse" is required and "stateUpdate" 
           const res = await this.generatePrimitive("image", parsedIntent.imageParams);
           finalImageUrl = res.image_url;
           finalImageMediaId = res.id;
+          if (params.onMediaReady && finalImageUrl) {
+            try {
+              params.onMediaReady({
+                modality: "image",
+                url: finalImageUrl,
+                mediaId: finalImageMediaId,
+              });
+            } catch (cbErr) {
+              console.warn("[CyberSoulClient] onMediaReady(image) threw:", cbErr);
+            }
+          }
         } catch (e) {
           if (
             e instanceof CyberSoulInsufficientPointsError ||
-            e instanceof CyberSoulWalletError
+            e instanceof CyberSoulWalletError ||
+            e instanceof CyberSoulSensitiveContentError
           ) {
             proactiveMediaError = e;
             proactiveAffected.push("image");
@@ -1384,6 +1637,7 @@ If "shouldSkipProactive" is false, "textResponse" is required and "stateUpdate" 
       }
 
       const persistedDynamicContext = (await persistedStatePromise) ?? undefined;
+      const giftedOutfit = (await giftOutfitPromise) ?? undefined;
 
       const proactiveMediaErrorEnv = proactiveMediaError
         ? this.buildMediaError(proactiveMediaError, proactiveAffected)
@@ -1398,6 +1652,7 @@ If "shouldSkipProactive" is false, "textResponse" is required and "stateUpdate" 
         stateUpdate: parsedIntent.stateUpdate,
         persistedDynamicContext,
         mediaError: proactiveMediaErrorEnv,
+        giftedOutfit,
       };
     } catch (error: any) {
       // Mirror `interact()`: preserve typed SDK errors for the caller.
@@ -1545,8 +1800,11 @@ Output strictly valid JSON ONLY. No markdown, no conversational filler. Return e
 
   /**
    * Gift a new outfit to the character's wardrobe inventory.
+   * Returns the number of wardrobe items the backend created (the
+   * backend may expand a single description into multiple items), or
+   * `undefined` when the server did not report a count.
    */
-  public async giftOutfit(descriptionText: string): Promise<void> {
+  public async giftOutfit(descriptionText: string): Promise<number | undefined> {
     const res = await this.apiFetch(
       "/api/v1/cyber-soul/characters/gift-outfit",
       {
@@ -1555,6 +1813,17 @@ Output strictly valid JSON ONLY. No markdown, no conversational filler. Return e
       },
     );
     if (!res.ok) throw new Error("Failed to gift outfit");
+    try {
+      const body = (await res.json()) as { count?: unknown };
+      return typeof body.count === "number" && Number.isFinite(body.count)
+        ? body.count
+        : undefined;
+    } catch {
+      // The gift already succeeded server-side (res.ok); a missing/
+      // unparseable count is non-fatal — report "unknown" rather than
+      // fabricating a number.
+      return undefined;
+    }
   }
 
   /**

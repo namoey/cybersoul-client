@@ -157,3 +157,25 @@ export class CyberSoulWalletError extends CyberSoulApiError {
     this.code = code;
   }
 }
+
+/**
+ * The backend rejected an image/voice generation request because the
+ * prompt (or the model's output) was flagged as sensitive / unsafe
+ * (backend code `E005`). The user can recover by sending a different
+ * prompt — there's nothing to retry automatically.
+ */
+export class CyberSoulSensitiveContentError extends CyberSoulApiError {
+  readonly code: string;
+
+  constructor(
+    endpoint: string,
+    method: string,
+    status: number,
+    message: string,
+    body?: unknown,
+    code: string = "E005",
+  ) {
+    super(endpoint, method, status, message, body, "sensitive-content");
+    this.code = code;
+  }
+}

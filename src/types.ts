@@ -34,6 +34,14 @@ export interface HistoryEntry {
   content: string;
   actionText?: string;
   mediaHint?: string;
+  /**
+   * Marker for assistant turns that already auto-triggered an event
+   * (e.g. an outing/hangout the character accepted). Surfaced in the
+   * transcript as a `[Triggered Event: ...]` tag so the dispatcher's
+   * trigger-event repetition gate can avoid re-triggering the same
+   * activity on later turns. Mirrors how `mediaHint` tags past media.
+   */
+  eventHint?: string;
   isProactive?: boolean;
   timestamp?: string | number | Date;
 }
@@ -44,6 +52,17 @@ export interface InteractMetadata {
   isEndTurn?: boolean;
   triggerEvent?: DispatcherIntent["triggerEvent"];
   likePreviousPicture?: boolean;
+  /**
+   * True when the client has already decided to dispatch a voice
+   * generation task for this turn (i.e. `onMediaReady({modality:"voice"})`
+   * will fire later, barring TTS failure). UIs that render an early
+   * text bubble from `onTextReady` should suppress it when this is set —
+   * the text content is going to be replaced by the voice bubble anyway,
+   * so showing both (with a brief text-then-voice flicker, and a text
+   * push notification that gets superseded by a voice bubble) is
+   * confusing to the end user.
+   */
+  willGenerateVoice?: boolean;
 }
 
 /**
@@ -59,12 +78,66 @@ export interface PersistedDynamicContext {
   relationshipStage?: string;
 }
 
+/**
+ * Payload delivered by [InteractParams.onMediaReady] when an individual
+ * media task (image/voice) finishes. Fires from inside the SDK's
+ * per-modality `.then()` so callers can render the bubble the moment
+ * that modality is ready, instead of waiting for the slowest one to
+ * finish. The aggregated `InteractResponse` is still returned at the
+ * end and carries the same URLs (no double-render needed if the caller
+ * tracks per-modality state).
+ */
+export interface MediaReadyPayload {
+  modality: "image" | "voice";
+  url: string;
+  mediaId?: string;
+  /** Voice only — TTS duration in seconds when known. */
+  durationSec?: number;
+}
+
+/**
+ * Payload delivered by [InteractParams.onOutfitGifted] /
+ * [ProactiveParams.onOutfitGifted] when a new outfit is successfully
+ * added to the character's wardrobe during a turn. Fires for BOTH
+ * trigger paths: (a) the user explicitly gifts/buys an outfit, and
+ * (b) the conversation or an active event leads the character to
+ * acquire a brand-new outfit. Lets upstream consumers (e.g.
+ * cybersoul-chat) render a system message like
+ * "New outfit added to wardrobe".
+ */
+export interface OutfitGiftedPayload {
+  /** Human-readable description of the newly acquired outfit. */
+  descriptionText: string;
+  /**
+   * Number of wardrobe items the backend created for this gift, when
+   * the server reported it. Omitted when the count is unknown — never
+   * fabricated.
+   */
+  count?: number;
+}
+
 export interface ProactiveParams {
   history?: HistoryEntry[];
   maxUnreplied?: number;
   requestTypes?: InteractRequestType[];
   localContext?: string;
   onTextReady?: (textResponse: string, actionText?: string, metadata?: InteractMetadata) => void;
+  /**
+   * Fires when the server-authoritative PATCH /dynamic-context resolves,
+   * before media generation completes. Lets the UI update the live
+   * temperature / relationship stage immediately instead of waiting for
+   * the (potentially slow) image task.
+   */
+  onStateReady?: (persisted: PersistedDynamicContext) => void;
+  /** Fires per modality as each media task settles successfully. */
+  onMediaReady?: (payload: MediaReadyPayload) => void;
+  /**
+   * Fires when an outfit has been successfully added to the wardrobe
+   * during this turn (user-initiated gift OR character-initiated
+   * acquisition). Lets the UI render a system message like
+   * "New outfit added to wardrobe" in real time.
+   */
+  onOutfitGifted?: (payload: OutfitGiftedPayload) => void;
 }
 
 export interface ProactiveResponse {
@@ -84,6 +157,10 @@ export interface ProactiveResponse {
    * can still render the text reply and explain the missing media
    * without losing the conversation. See [InteractMediaError]. */
   mediaError?: InteractMediaError;
+  /** Set when an outfit was successfully added to the wardrobe this turn.
+   * Mirrors the [ProactiveParams.onOutfitGifted] callback for consumers
+   * that only read the final response. See [OutfitGiftedPayload]. */
+  giftedOutfit?: OutfitGiftedPayload;
   error?: string;
 }
 
@@ -93,6 +170,24 @@ export interface InteractParams {
   requestTypes?: InteractRequestType[];
   history?: HistoryEntry[];
   onTextReady?: (textResponse: string, actionText?: string, metadata?: InteractMetadata) => void;
+  /**
+   * Fires when the server-authoritative PATCH /dynamic-context resolves,
+   * before media generation completes. Lets the UI update the live
+   * temperature / relationship stage immediately instead of waiting for
+   * the (potentially slow) image task. When the turn has no
+   * `stateUpdate`, this still fires with an empty object so callers can
+   * use it as a generic "LLM phase done" signal.
+   */
+  onStateReady?: (persisted: PersistedDynamicContext) => void;
+  /** Fires per modality as each media task settles successfully. */
+  onMediaReady?: (payload: MediaReadyPayload) => void;
+  /**
+   * Fires when an outfit has been successfully added to the wardrobe
+   * during this turn (user-initiated gift OR character-initiated
+   * acquisition). Lets the UI render a system message like
+   * "New outfit added to wardrobe" in real time.
+   */
+  onOutfitGifted?: (payload: OutfitGiftedPayload) => void;
 }
 
 export interface OndemandEventParams {
@@ -139,6 +234,10 @@ export interface InteractResponse {
   imageMediaId?: string;
   audioUrl?: string;
   audioMediaId?: string;
+  /** Set when an outfit was successfully added to the wardrobe this turn.
+   * Mirrors the [InteractParams.onOutfitGifted] callback for consumers
+   * that only read the final response. See [OutfitGiftedPayload]. */
+  giftedOutfit?: OutfitGiftedPayload;
   likePreviousPicture?: boolean;
   durationSec?: number;
   triggeredEvent?: {
@@ -169,7 +268,7 @@ export interface InteractResponse {
  */
 export interface InteractMediaError {
   /** Coarse kind so UIs can map to a single user-facing message. */
-  kind: "insufficient-points" | "wallet" | "unknown";
+  kind: "insufficient-points" | "wallet" | "sensitive-content" | "unknown";
   /** Backend machine code when available (e.g. "INSUFFICIENT_POINTS"). */
   code?: string;
   /** Raw error message, for logs / diagnostics. */

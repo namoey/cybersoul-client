@@ -1013,28 +1013,68 @@ Note: Always include "isEndTurn". If "imageParams", "voiceArgs", "triggerEvent",
         },
       ];
 
-      // 3. Local Execute LLM
-      const rawLlmResponse = await this.llm.generate(promptMessages, 15000, 0.7);
-      // console.debug("[CyberSoulClient] Raw LLM Response:", rawLlmResponse);
+      // 3. Local Execute LLM (retry on non-actionable parse).
+      //    A "non-actionable" parse yields no usable `textResponse` AND no
+      //    media intent — i.e. the LLM hiccuped (empty body, truncated or
+      //    garbled JSON, or an empty textResponse field). Retrying the
+      //    generation is far better than silently echoing the user's own
+      //    message back as the character's reply (the historical
+      //    `: params.userMessage` fallback below), which downstream
+      //    consumers correctly reject as a non-actionable response.
+      const MAX_DISPATCH_ATTEMPTS = 3;
+      let parsedIntent: DispatcherIntent = { textResponse: "" };
+      for (let attempt = 1; attempt <= MAX_DISPATCH_ATTEMPTS; attempt++) {
+        const rawLlmResponse = await this.llm.generate(promptMessages, 15000, 0.7);
+        // console.debug("[CyberSoulClient] Raw LLM Response:", rawLlmResponse);
 
-      let parsedIntent: DispatcherIntent;
-      try {
-        parsedIntent = robustJsonParse<DispatcherIntent>(
-          rawLlmResponse,
-          "Dispatcher fallback",
-          { textResponse: "", actionText: "", isEndTurn: false }
-        );
-      } catch (e) {
+        try {
+          parsedIntent = robustJsonParse<DispatcherIntent>(
+            rawLlmResponse,
+            "Dispatcher fallback",
+            { textResponse: "", actionText: "", isEndTurn: false }
+          );
+        } catch (e) {
+          console.warn(
+            "[CyberSoulClient] JSON parse failed, falling back to raw text:",
+            e,
+          );
+          // Fallback robust mode - just text if completely broken
+          parsedIntent = {
+            textResponse: rawLlmResponse.replace(/^[\`\s]+|[\`\s]+$/g, "").trim(),
+          };
+        }
+        // console.debug("[CyberSoulClient] Parsed Intent:", parsedIntent);
+
+        const hasUsableText =
+          typeof parsedIntent.textResponse === "string" &&
+          parsedIntent.textResponse.trim().length > 0;
+        const hasMediaIntent =
+          !!parsedIntent.imageParams || !!parsedIntent.voiceArgs;
+        if (hasUsableText || hasMediaIntent) {
+          break;
+        }
         console.warn(
-          "[CyberSoulClient] JSON parse failed, falling back to raw text:",
-          e,
+          `[CyberSoulClient] interact produced a non-actionable intent (attempt ${attempt}/${MAX_DISPATCH_ATTEMPTS}); ${
+            attempt < MAX_DISPATCH_ATTEMPTS ? "retrying" : "giving up"
+          }.`,
         );
-        // Fallback robust mode - just text if completely broken
-        parsedIntent = {
-          textResponse: rawLlmResponse.replace(/^[\`\s]+|[\`\s]+$/g, "").trim(),
-        };
       }
-      // console.debug("[CyberSoulClient] Parsed Intent:", parsedIntent);
+
+      // After exhausting retries, fail fast instead of echoing the user's
+      // own message back as the character's reply. The `: params.userMessage`
+      // fallback used below is only ever reached for media-only turns now.
+      {
+        const finalHasUsableText =
+          typeof parsedIntent.textResponse === "string" &&
+          parsedIntent.textResponse.trim().length > 0;
+        const finalHasMediaIntent =
+          !!parsedIntent.imageParams || !!parsedIntent.voiceArgs;
+        if (!finalHasUsableText && !finalHasMediaIntent) {
+          throw new Error(
+            "LLM returned a non-actionable response after retries (no usable textResponse and no media intent). Check LLM template/provider alignment.",
+          );
+        }
+      }
 
       // 4. Update Backend State async (in parallel with media generation
       //    below). We keep the promise so we can resolve the
@@ -1796,6 +1836,54 @@ Output strictly valid JSON ONLY. No markdown, no conversational filler. Return e
     userAnalysis?: DispatcherIntent["userAnalysis"],
   ): Promise<PersistedDynamicContext | null> {
     return this._updateDynamicContextInternal(stateUpdate, userAnalysis);
+  }
+
+  /**
+   * Restores the server-side relationship temperature to an exact absolute
+   * value. Used by chat recall, where inverse deltas are not accurate once the
+   * backend has applied dampening, caps, and stage re-evaluation.
+   */
+  public async restoreDynamicContextTemperature(
+    temperatureAbsolute: number,
+  ): Promise<PersistedDynamicContext | null> {
+    if (!Number.isFinite(temperatureAbsolute)) return null;
+
+    const normalizedAbsolute = Math.max(
+      0,
+      Math.min(100, Math.round(temperatureAbsolute * 10) / 10),
+    );
+
+    try {
+      const res = await this.apiFetch(
+        "/api/v1/cyber-soul/characters/dynamic-context",
+        {
+          method: "PATCH",
+          body: JSON.stringify({ temperatureAbsolute: normalizedAbsolute }),
+        },
+      );
+      if (!res.ok) return null;
+
+      const payload = (await res.json()) as {
+        status?: string;
+        dynamicContext?: { temperature?: number };
+        relationshipStage?: string;
+      };
+
+      if (payload?.status !== "success") return null;
+      if (typeof payload.dynamicContext?.temperature !== "number") return null;
+      if (!Number.isFinite(payload.dynamicContext.temperature)) return null;
+
+      return {
+        temperature: payload.dynamicContext.temperature,
+        relationshipStage:
+          typeof payload.relationshipStage === "string"
+            ? payload.relationshipStage
+            : undefined,
+      };
+    } catch (e) {
+      console.error("restoreDynamicContextTemperature failed", e);
+      return null;
+    }
   }
 
   /**

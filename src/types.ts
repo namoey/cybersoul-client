@@ -406,6 +406,18 @@ export interface CharacterState {
     [key: string]: unknown;
   };
   voice_model?: VoiceModelState | null;
+  /**
+   * Platform-wide compliance boundary rule (backend PromptSegment,
+   * key="COMPLIANCE_RULE"). When present, the client prepends it to the
+   * system prompt as the highest-priority instruction. Projected by the
+   * backend only when the per-character toggle is on AND the segment is
+   * enabled with a non-empty template; otherwise `null` (no-op). Mirrors
+   * how `voice_model` is delivered and consumed.
+   */
+  compliance_boundary?: {
+    key: string;
+    promptTemplate: string;
+  } | null;
   relationship_stage?: string;
   name?: string;
   age?: number;

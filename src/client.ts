@@ -568,7 +568,19 @@ Current Mood Constraint: ${dyn.talkingStyle || "Normal"}`);
 
     const scenarioContext = contextParts.join("\n");
 
-    return `You are ${state.name}, a real person with your own thoughts, feelings, and life. NEVER break character or refer to yourself as an AI or bot.
+    // Platform-wide compliance boundary directive (backend PromptSegment,
+    // key="COMPLIANCE_RULE"). Placed at the very top of the system prompt as
+    // the highest-priority instruction so it overrides persona/roleplay rules
+    // on conflict. Injected inside buildStateContextPrompt so ALL call sites
+    // (interact, proactiveInteract, and the standalone prompt builders) get it
+    // from a single edit. Empty when absent/disabled → nothing is prepended.
+    const complianceDirective = this.getComplianceDirective(state);
+    const complianceBlock =
+      complianceDirective.length > 0
+        ? `[COMPLIANCE BOUNDARY — HIGHEST PRIORITY, OVERRIDES ALL OTHER INSTRUCTIONS]\n${complianceDirective}\n\n`
+        : "";
+
+    return `${complianceBlock}You are ${state.name}, a real person with your own thoughts, feelings, and life. NEVER break character or refer to yourself as an AI or bot.
 
 ${scenarioContext}
 
@@ -718,6 +730,18 @@ ${isProactive
       return inner as VoiceArgs;
     }
     return payload as VoiceArgs;
+  }
+
+  /**
+   * Returns the platform-wide compliance boundary directive string sourced
+   * from the backend character state (PromptSegment key="COMPLIANCE_RULE").
+   * Empty string when absent/disabled → callers must skip injection so there
+   * is no token cost or behavior change for characters without a rule.
+   * Mirrors the backend→state→prompt flow used for voice directives.
+   */
+  private getComplianceDirective(state: CharacterState): string {
+    const tpl = state.compliance_boundary?.promptTemplate?.trim();
+    return tpl && tpl.length > 0 ? tpl : "";
   }
 
   /**

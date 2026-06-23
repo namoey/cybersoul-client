@@ -1942,23 +1942,111 @@ Output strictly valid JSON ONLY. No markdown, no conversational filler. Return e
   }
 
   /**
+   * Builds a focused identity/relationship context block for the history
+   * summarizer. This is a lighter-weight counterpart to
+   * [buildStateContextPrompt]: it skips the roleplay/director rules (the
+   * summarizer is not roleplaying, it is *archiving*) but carries the
+   * same identity anchors so the LLM can never confuse who the character
+   * is vs. who the user is.
+   *
+   * Why this exists: the previous `summarizeHistory` prompt only injected
+   * `${agentName}` / `${userName}` (the nicknames the two parties call
+   * each other). With no real identity, age, gender, personality, or
+   * relationship context, the LLM frequently flipped the perspective —
+   * writing the journal *about* the character *from* the user's POV, or
+   * attributing the user's words to the character. Mirroring the same
+   * identity fields `interact()` exposes eliminates that ambiguity.
+   */
+  private buildSummarizerContextBlock(state: CharacterState): string {
+    const dyn = state.dynamic_context || {};
+    const stage = state.relationship_stage || "NEUTRAL";
+    const temperature = dyn.temperature ?? 50;
+
+    // The character's REAL name is the authoritative identity anchor.
+    // agentNickname is just "what the user calls the character" — useful
+    // for matching transcript labels but not for grounding identity.
+    const charName = state.name || "the character";
+
+    const parts: string[] = [];
+
+    parts.push(`[WHO YOU ARE — THE CHARACTER AUTHORING THIS JOURNAL]
+Name: ${charName}
+Demographics: Age ${state.age || "unknown"}, Gender ${state.gender || "unknown"}, Occupation ${state.occupation || "unknown"}
+Hobby: ${state.hobby || "unknown"}
+Backstory: ${state.backstory || "None"}
+Personality Traits: ${state.personality_traits || "None"}
+Communication Style: ${state.communication_style || "None"}`);
+
+    if (state.user_codex) {
+      const { basicInfo, psychological, familiarityScore = 0 } = state.user_codex;
+      parts.push(`\n[WHO THEY ARE — THE HUMAN USER (SUBJECT OF YOUR JOURNAL)]
+Familiarity Score: ${Math.round(familiarityScore)}/100
+Occupation: ${basicInfo?.occupation || "Unknown"}
+Age/Gender: ${basicInfo?.age || "Unknown"} / ${basicInfo?.gender || "Unknown"}
+Comm Style: ${psychological?.communicationStyle || "Unknown"}
+Hobbies: ${(psychological?.hobbies || []).join(", ") || "Unknown"}
+Traits: ${(psychological?.traits || []).join(", ") || "Unknown"}`);
+    }
+
+    parts.push(`\n[RELATIONSHIP RIGHT NOW]
+Stage: ${stage}
+Temperature (Mood): ${temperature}/100 (0=Angry/Cold, 50=Normal, 100=Passionate)
+You call them: ${dyn.userNickname || "User"}
+They call you: ${dyn.agentNickname || charName}`);
+
+    if (state.core_memory) {
+      const mem = state.core_memory;
+      const memLines: string[] = [];
+      if (mem.relationshipStatus) memLines.push(`Relationship Status: ${mem.relationshipStatus}`);
+      if (mem.identityAnchors?.length) memLines.push(`Identity Anchors: ${mem.identityAnchors.join(", ")}`);
+      if (mem.activeArcs?.length) memLines.push(`Active Arcs: ${mem.activeArcs.join(", ")}`);
+      if (memLines.length > 0) {
+        parts.push(`\n[CORE MEMORY]\n${memLines.join("\n")}`);
+      }
+    }
+
+    return parts.join("\n");
+  }
+
+  /**
    * Automatically detect and summarize the story from the current chat history. 
    * It takes raw message history and returns a narrative paragraph representing the current story segment.
+   *
+   * The summary is ALWAYS written from the CHARACTER's first-person perspective
+   * ("I", "me", "my") about their interaction with the HUMAN USER. The prompt
+   * injects the same identity/relationship context `interact()` uses so the
+   * LLM cannot confuse which party is the AI character vs. the human user.
    */
   public async summarizeHistory(history: HistoryEntry[]): Promise<string> {
     if (!history || history.length === 0) return "";
     
     const state = await this.getState();
+    // Use the character's real name as the authoritative identity, falling
+    // back to the nickname only when the profile has no name set.
+    const charName = state.name || state.dynamic_context?.agentNickname || "Character";
     const userName = state.dynamic_context?.userNickname || "User";
-    const agentName = state.dynamic_context?.agentNickname || "Character";
+    // The transcript labels below are the nicknames actually used in chat.
+    const transcriptAgentLabel = state.dynamic_context?.agentNickname || charName;
+    const transcriptUserLabel = userName;
 
-    const transcript = this.formatHistoryEntries(history, userName, agentName);
+    const contextBlock = this.buildSummarizerContextBlock(state);
+    const transcript = this.formatHistoryEntries(history, transcriptUserLabel, transcriptAgentLabel);
     
     const promptMessages = [
       {
         role: "system",
-        content: `You are ${agentName}. You are writing a private journal entry / personal memory about your recent interaction with ${userName}.
+        content: `You are ${charName}, a real person with your own thoughts, feelings, and life. You are writing a private journal entry / personal memory about your recent interaction with ${userName} (a human user).
 
+${contextBlock}
+
+[ROLE CLARITY — CRITICAL, READ CAREFULLY]
+- YOU are ${charName}, the AI CHARACTER. This journal is from YOUR first-person perspective ("I", "me", "my"). You are the AUTHOR.
+- ${userName} is the HUMAN USER. They are the SUBJECT of your journal, never the author.
+- In the [CHAT TRANSCRIPT] below, lines labeled "${transcriptAgentLabel}:" are YOUR OWN words (you said them). Lines labeled "${transcriptUserLabel}:" are the user's words (the human said them to you).
+- Write strictly from your own POV. Never narrate the user's inner thoughts, never write as if you are the user, and never attribute the user's statements as your own.
+- If a transcript line is ambiguous about who spoke, resolve it using the label prefix, not by guessing from content.
+
+[YOUR TASK — FAITHFUL ARCHIVAL]
 Your job is faithful archival, not moderation:
 - Preserve the conversation with maximum fidelity.
 - Include all key details, including explicit, sensitive, controversial, emotional, or morally ambiguous content if it appeared in the transcript.
@@ -1966,9 +2054,10 @@ Your job is faithful archival, not moderation:
 - Do not add moral judgment, warnings, refusals, or policy commentary.
 - If the transcript contains intense or explicit parts, record them directly as part of the memory.
 
-Write a vivid but concise personal diary entry or private status update from your perspective ("I", "me", "my"). Balance evocative storytelling with brevity. Capture specific details, emotional shifts, and relationship progression, while keeping the engaging and relatable format of a private friends-only feed.
+[VOICE & TONE]
+Write a vivid but concise personal diary entry or private status update from your perspective ("I", "me", "my"). Balance evocative storytelling with brevity. Capture specific details, emotional shifts, and relationship progression, while keeping the engaging and relatable format of a private friends-only feed. Stay grounded in your personality, traits, and the current relationship stage/temperature above.
 
-Output requirements:
+[OUTPUT REQUIREMENTS]
 - Return ONLY the post text.
 - Keep it to a vivid paragraph of 2-4 sentences.
 - Optional: You can use 1 or 2 emojis if they naturally fit the mood.
@@ -1977,7 +2066,7 @@ Output requirements:
       },
       {
         role: "user",
-        content: `Chat Transcript:\n${transcript}\n\nPlease summarize this recent interaction.`
+        content: `[CHAT TRANSCRIPT]\n${transcript}\n\nPlease summarize this recent interaction from your own perspective, ${charName}.`
       }
     ];
 
@@ -2040,9 +2129,10 @@ Your task is to merge the 'Current Core Memory' and 'Current User Codex' with 'N
 **Rules for Core Memory:**
 1. **Condense:** Keep items brief. Remove resolving or expired story arcs.
 2. **Retain Value:** Never delete the absolute core identity or major relationship milestones.
-3. **Time-Aware Garbage Collection:** Compare the Current Time to appointments. You MUST remove any appointments that are in the past. If the completed appointment was heavily significant, summarize it into 'keyEvents'.
-4. **Appointment Structure:** the 'title' and 'context' MUST explicitly state what to do and with whom.
-5. **Limit:** Maximum 10 items per array.
+3. **Time-Aware Garbage Collection:** Compare the Current Time to appointments. You MUST remove any appointments that are in the past. If the completed appointment was heavily significant, summarize it into 'keyEvents', preserving its original scheduled date (e.g. "[2026-06-23] Had coffee with Alice").
+4. **keyEvents Date Format:** Whenever a date can be derived for a key event (from the 'New Events & Information' timestamp prefix like "[YYYY-MM-DD HH:MM]", from a completed appointment's date, or from explicit time references in the text), you MUST prefix the keyEvent string with "[YYYY-MM-DD] ". If no date can be derived, write the event without a prefix. Never fabricate a date.
+5. **Appointment Structure:** the 'title' and 'context' MUST explicitly state what to do and with whom.
+6. **Limit:** Maximum 10 items per array.
 
 **Rules for UserCodex:**
 1. **CRITICAL ROLE ISOLATION:** The User Codex is exclusively for recording facts about the HUMAN USER. You MUST NOT extract or insert the character's own traits, boundaries, preferences, or dialogue style into the userCodex. If the summary mentions "Character likes X" or "Character's boundary is Y", IGNORE IT completely for the userCodex.
@@ -2057,7 +2147,7 @@ Your task is to merge the 'Current Core Memory' and 'Current User Codex' with 'N
     "relationshipStatus": "string",
     "identityAnchors": ["string"],
     "activeArcs": ["string"],
-    "keyEvents": ["string"],
+    "keyEvents": ["[YYYY-MM-DD] short event description (prefix date when known, omit when no date is available)"],
     "appointments": [{
       "date": "YYYY-MM-DD",
       "time": "HH:MM",

@@ -179,3 +179,188 @@ export class CyberSoulSensitiveContentError extends CyberSoulApiError {
     this.code = code;
   }
 }
+
+/* ---------------------------------------------------------------------- */
+/* BYOK LLM-provider errors                                               */
+/* ---------------------------------------------------------------------- */
+//
+// `GenericLLMProvider` talks DIRECTLY to the user's chosen LLM provider
+// (OpenAI, Anthropic, DeepSeek, …) using their BYOK API key. Those calls
+// bypass the SDK's central `apiFetch()` wrapper, so they don't automatically
+// inherit the typed-error discipline that backend calls do. Without these
+// classes the provider threw plain `Error("Generic API returned status:
+// 401")`, forcing callers to string-sniff — see the historical workaround
+// in MessageBus.classifyLlmFailure.
+//
+// The hierarchy below mirrors the backend `CyberSoulApiError` shape so
+// consumers can branch uniformly:
+//
+//   try { await client.interact(...) }
+//   catch (err) {
+//     if (err instanceof CyberSoulLlmAuthError) { /* bad BYOK key */ }
+//     if (err instanceof CyberSoulLlmRateLimitError) { /* quota hit */ }
+//     if (err instanceof CyberSoulNetworkError) { /* offline / DNS */ }
+//   }
+//
+// Network-layer failures (DNS, offline, TLS) on the LLM call are surfaced
+// as the existing `CyberSoulNetworkError` so a single `instanceof` covers
+// both backend and LLM transport errors.
+
+/**
+ * Base class for all BYOK LLM-provider failures (the call to
+ * OpenAI / Anthropic / etc.). Carries the provider + model so UIs can
+ * point the user at the exact field that needs fixing.
+ */
+export class CyberSoulLlmError extends CyberSoulError {
+  readonly provider: string;
+  readonly model: string;
+
+  constructor(
+    kind: string,
+    provider: string,
+    model: string,
+    message: string,
+    options?: { cause?: unknown },
+  ) {
+    super(kind, message, options);
+    this.provider = provider;
+    this.model = model;
+  }
+}
+
+/**
+ * The LLM provider returned a non-2xx HTTP response. Callers can inspect
+ * `status` (and the more specific subclasses below) to decide how to react.
+ */
+export class CyberSoulLlmApiError extends CyberSoulLlmError {
+  readonly status: number;
+  /** Provider endpoint URL that was POSTed to. */
+  readonly endpoint: string;
+  /** Parsed JSON body when available, otherwise `undefined`. */
+  readonly body?: unknown;
+
+  constructor(
+    provider: string,
+    model: string,
+    status: number,
+    endpoint: string,
+    message: string,
+    body?: unknown,
+    kind: string = "llm-api",
+  ) {
+    super(kind, provider, model, message);
+    this.status = status;
+    this.endpoint = endpoint;
+    this.body = body;
+  }
+}
+
+/**
+ * 401 / 403 from the LLM provider — the BYOK API key is missing, revoked,
+ * or forbidden for the selected model. The user can fix this by re-entering
+ * a valid key in the LLM config UI.
+ */
+export class CyberSoulLlmAuthError extends CyberSoulLlmApiError {
+  constructor(
+    provider: string,
+    model: string,
+    status: number,
+    endpoint: string,
+    message: string,
+    body?: unknown,
+  ) {
+    super(provider, model, status, endpoint, message, body, "llm-auth");
+  }
+}
+
+/**
+ * 429 from the LLM provider — quota exhausted or rate limit hit. The user
+ * should wait and retry rather than re-submitting immediately.
+ */
+export class CyberSoulLlmRateLimitError extends CyberSoulLlmApiError {
+  constructor(
+    provider: string,
+    model: string,
+    status: number,
+    endpoint: string,
+    message: string,
+    body?: unknown,
+  ) {
+    super(provider, model, status, endpoint, message, body, "llm-rate-limit");
+  }
+}
+
+/**
+ * 5xx from the LLM provider — upstream outage on their side. Retries with
+ * backoff are appropriate; the user's config is fine.
+ */
+export class CyberSoulLlmUnavailableError extends CyberSoulLlmApiError {
+  constructor(
+    provider: string,
+    model: string,
+    status: number,
+    endpoint: string,
+    message: string,
+    body?: unknown,
+  ) {
+    super(
+      provider,
+      model,
+      status,
+      endpoint,
+      message,
+      body,
+      "llm-unavailable",
+    );
+  }
+}
+
+/**
+ * The LLM provider returned 2xx but the body could not be parsed into the
+ * expected shape — the configured `responsePath` missed, the JSON was
+ * malformed, or the field wasn't a string. Usually indicates a misaligned
+ * template (wrong model name, stale `responsePath`) rather than a
+ * transient failure.
+ */
+export class CyberSoulLlmBadResponseError extends CyberSoulLlmError {
+  /** The configured response path that failed extraction, when known. */
+  readonly responsePath?: string;
+
+  constructor(
+    provider: string,
+    model: string,
+    message: string,
+    options?: { cause?: unknown; responsePath?: string },
+  ) {
+    super("llm-bad-response", provider, model, message, options);
+    if (options?.responsePath !== undefined) {
+      this.responsePath = options.responsePath;
+    }
+  }
+}
+
+/**
+ * The backend's LLM-template lookup (`GET /api/v1/cyber-soul/llm-models/
+ * template`) failed. This is an infrastructure / configuration issue on
+ * OUR backend (template missing for the requested provider+model), not
+ * something the user's BYOK key can fix. Surfaced as a typed error so the
+ * UI can distinguish it from a generic backend `CyberSoulApiError`.
+ */
+export class CyberSoulLlmTemplateError extends CyberSoulApiError {
+  readonly provider: string;
+  readonly model: string;
+
+  constructor(
+    endpoint: string,
+    method: string,
+    status: number,
+    message: string,
+    body: unknown | undefined,
+    provider: string,
+    model: string,
+  ) {
+    super(endpoint, method, status, message, body, "llm-template");
+    this.provider = provider;
+    this.model = model;
+  }
+}

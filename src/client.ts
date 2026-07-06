@@ -271,6 +271,7 @@ export class CyberSoulClient {
       types: ctx.types,
       isAuto: ctx.isAuto,
       requestedOthers: ctx.requestedOthers,
+      allowSkip: params.allowSkip === true,
     });
 
     const transcript =
@@ -334,7 +335,12 @@ export class CyberSoulClient {
         parsedIntent.textResponse.trim().length > 0;
       const hasMediaIntent =
         !!parsedIntent.imageParams || !!parsedIntent.voiceArgs;
-      if (hasUsableText || hasMediaIntent) {
+      // A deliberate reactive-skip decision is itself an actionable
+      // outcome — don't burn retry attempts trying to "fix" it into a
+      // text reply. Whether the caller actually honors the skip is
+      // decided later in `interact()` (gated on `allowSkip`).
+      const hasSkipIntent = parsedIntent.shouldSkipInteract === true;
+      if (hasUsableText || hasMediaIntent || hasSkipIntent) {
         break;
       }
       console.warn(
@@ -942,6 +948,22 @@ export class CyberSoulClient {
       const ctx = await this.prepareInteractContext(params);
       const promptMessages = this.buildInteractPromptMessages(ctx, params);
       const parsedIntent = await this.dispatchInteractWithRetry(promptMessages);
+
+      // Reactive skip: when the caller opted in (allowSkip) and the
+      // character chose not to reply, short-circuit BEFORE any media /
+      // state work. Mirrors proactive's skip path. Frontends treat this
+      // as a no-op — the user's message stays, no assistant bubble is
+      // rendered, no temperature / scene mutation is persisted.
+      if (params.allowSkip && parsedIntent.shouldSkipInteract) {
+        return {
+          status: "skipped",
+          reason:
+            parsedIntent.skipReason ||
+            "Character chose not to reply to this message.",
+          textResponse: "",
+        };
+      }
+
       this.assertInteractIntentActionable(parsedIntent);
 
       const persistedStatePromise = this.startInteractStateUpdate(

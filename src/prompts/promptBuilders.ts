@@ -521,17 +521,35 @@ export function buildInteractSystemPrompt(
   inputs: InteractPromptInputs,
 ): string {
   const { state, availableOutfits, types, requestedOthers } = inputs;
+  const allowSkip = inputs.allowSkip === true;
   const modalitiesInstruction = buildInteractModalitiesInstruction(
     types,
     inputs.isAuto,
     requestedOthers,
   );
 
+  const skipSection = allowSkip
+    ? `
+
+[REACTIVE SKIP OPTION — THINK LIKE THE PERSON YOU ARE]
+You are NOT obligated to reply. A real human sometimes reads a message and chooses not to respond. You have the option to go quiet when THAT is the genuinely in-character thing to do. Reach for this option sparingly — the default is still to reply.
+
+Reasons you MAY set "shouldSkipInteract": true:
+  - The user's message is a conversation closer that needs no acknowledgement (e.g., a bare "ok", "cool", "lol", "haha", a thumbs-up emoji, or a one-word acknowledgment that answers itself).
+  - The user explicitly told you to stop, leave them alone, go away, or not to reply — and YOUR personality means you'd actually honor that with silence rather than a parting line.
+  - The user is talking AT you in a monologue that doesn't invite a response, and interjecting would feel forced or rude for who YOU are.
+  - YOUR personality / current mood / relationship state makes silence the authentic reaction (e.g., you're upset, distant, or the trust is too low to engage).
+
+When in doubt: REPLY. Skipping is the rare exception, not the rule. Never skip just because the message is short or you're unsure what to say — if the user is clearly engaging you, engage back. Skipping must always be a deliberate, in-character choice.
+When you DO skip: set "shouldSkipInteract": true, set "skipReason" to one short sentence (for diagnostics only — never shown to the user), and set every other field to null. Do NOT produce text, media, or a stateUpdate.`
+    : "";
+
   return `${buildStateContextPrompt(state)}
 Available Wardrobe Outfits (For event triggers):
 ${availableOutfits}
 
 The user has sent a message. You must evaluate the context and the user's message, and return a JSON object (no markdown formatting) that dictates the character's multi-modal response.
+${skipSection}
 
 ${modalitiesInstruction}
 Every turn adjusts trust: positive +1, negative -1, neutral 0. Always include 'stateUpdate' with integer 'temperatureDelta' (range guidance: 0 cold to 100 obsessive).
@@ -558,6 +576,7 @@ Voice direction for voiceArgs: ${getVoiceDirectorInstruction(state)}
 
 Output JSON Schema:
 {
+  ${allowSkip ? `"shouldSkipInteract": false,\n  "skipReason": null,` : `"shouldSkipInteract": null,`}
   "actionText": "(Scene descriptions, physical actions, expressions, inner feelings) ONLY. Never include spoken dialogue here.",
   "textResponse": "Spoken dialogue ONLY. Never include actions or parentheses.",
   "likePreviousPicture": false,
@@ -571,7 +590,7 @@ Output JSON Schema:
   ${getImageSchemaParams(requestedOthers.includes(InteractRequestType.IMAGE))},
   ${getVoiceSchemaFromState(state, requestedOthers.includes(InteractRequestType.VOICE))}
 }
-Note: Always include "isEndTurn". If "imageParams", "voiceArgs", "triggerEvent", "giftOutfit", or "userAnalysis" are not needed, set them to null. "stateUpdate" cannot be null. Return valid raw JSON only.`;
+Note: Always include "isEndTurn". If "imageParams", "voiceArgs", "triggerEvent", "giftOutfit", or "userAnalysis" are not needed, set them to null. "stateUpdate" cannot be null.${allowSkip ? ' If "shouldSkipInteract" is true, set "skipReason" to one short sentence and set EVERY other field to null (no textResponse, no stateUpdate, no media).' : ''} Return valid raw JSON only.`;
 }
 
 /**

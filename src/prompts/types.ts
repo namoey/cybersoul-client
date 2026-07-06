@@ -21,6 +21,12 @@ export interface InteractPromptInputs {
   types: InteractRequestType[];
   isAuto: boolean;
   requestedOthers: InteractRequestType[];
+  /**
+   * When true, the interact prompt offers the character the option to
+   * SKIP replying (mirrors proactive's `shouldSkipProactive`). The LLM
+   * decides based on personality, context, and relationship state.
+   */
+  allowSkip?: boolean;
 }
 
 export interface ProactivePromptInputs {

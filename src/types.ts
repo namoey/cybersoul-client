@@ -169,6 +169,19 @@ export interface InteractParams {
   localContext?: string;
   requestTypes?: InteractRequestType[];
   history?: HistoryEntry[];
+  /**
+   * When true, the character is permitted to SKIP replying to the user's
+   * message — simulating a real human who sometimes goes quiet based on
+   * context, personality, and relationship state. Defaults to false so
+   * existing callers always get a reply (backward compatible).
+   *
+   * When the character decides to skip, the SDK returns
+   * `{ status: "skipped", reason }` without generating media or persisting
+   * state, and `onTextReady` is NOT fired. Frontends should treat a
+   * skipped turn as a no-op (keep the user's message, render no assistant
+   * bubble).
+   */
+  allowSkip?: boolean;
   onTextReady?: (textResponse: string, actionText?: string, metadata?: InteractMetadata) => void;
   /**
    * Fires when the server-authoritative PATCH /dynamic-context resolves,
@@ -227,7 +240,13 @@ export interface WardrobeItem {
 }
 
 export interface InteractResponse {
-  status: "success" | "error";
+  status: "success" | "skipped" | "error";
+  /**
+   * Short explanation when `status === "skipped"` (the character chose not
+   * to reply) or `status === "error"`. Absent on success. Frontends use
+   * this only for diagnostics/logging — a skipped turn renders nothing.
+   */
+  reason?: string;
   textResponse: string;
   actionText?: string;
   imageUrl?: string;
@@ -285,6 +304,14 @@ export interface OngoingSceneState {
 export interface DispatcherIntent {
   shouldSkipProactive?: boolean;
   skipReason?: string;
+  /**
+   * Reactive-skip signal for `interact()`. Only produced when the caller
+   * opts in via [InteractParams.allowSkip]. When true, the character
+   * chose NOT to reply to the user's message (simulating a real human
+   * who sometimes goes quiet). The SDK short-circuits before any media /
+   * state work and returns `{ status: "skipped" }`.
+   */
+  shouldSkipInteract?: boolean;
   textResponse?: string;
   actionText?: string;
   imageParams?: any;

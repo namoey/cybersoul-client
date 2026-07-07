@@ -1,0 +1,12 @@
+#!/usr/bin/env sh
+# Pre-commit hook: keep src/version.ts in sync with package.json.
+# If package.json is staged and src/version.ts would become stale, regenerate
+# it and re-stage so the two never drift in a commit.
+set -e
+
+STAGED_PKG=$(git diff --cached --name-only --diff-filter=ACM | grep -Fx package.json || true)
+
+if [ -n "$STAGED_PKG" ]; then
+  node scripts/generate-version.mjs >/dev/null
+  git add src/version.ts
+fi

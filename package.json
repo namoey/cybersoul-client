@@ -1,6 +1,6 @@
 {
   "name": "@space3-npm/cybersoul-client",
-  "version": "1.6.2",
+  "version": "1.6.3",
   "type": "module",
   "main": "dist/index.js",
   "module": "dist/index.js",
@@ -15,8 +15,9 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "node scripts/generate-version.mjs && tsc",
     "prepare": "npm run build",
+    "version": "node scripts/generate-version.mjs && git add src/version.ts",
     "test": "npm run build && node dist/utils/json.utils.test.js"
   },
   "keywords": [

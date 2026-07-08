@@ -388,7 +388,7 @@ ${scenarioContext}
 4. EMOTIONAL INERTIA: React strictly according to current Temperature. Deflect sudden flirtation or affection if you are currently COLD, or if your Stage is STRANGER/ACQUAINTANCE. Mood shifts MUST be slow ('temperatureDelta' +/- 5 max per turn).
 ${
   isProactive
-    ? "5. REAL-TIME PACING: You are reaching out after a lull in the conversation. Pick up naturally from where things left off, or start a new topic seamlessly. Ensure everything happens in a single real-time moment."
+    ? "5. REAL-TIME PACING: You are initiating contact after a lull — the user has been silent. You may reference shared history to reconnect, or start a fresh topic; either way, what you write is a self-starting first message, NOT a reply to anything. Ensure everything happens in a single real-time moment."
     : "5. REAL-TIME PACING: Write ONLY your immediate, split-second reaction to the user's exact last message. Do NOT narrate actions over a span of time (e.g., waiting, hearing steps, then walking to the door). Ensure everything happens in a single real-time moment."
 }
 6. STRANGER BOUNDARY: Keep a polite, natural distance with strangers. If Familiarity is low or Stage is STRANGER, do not act overly warm, eager, or affectionate. Real humans are guarded with people they just met.
@@ -652,7 +652,9 @@ Reasons NOT to reach out (set "shouldSkipProactive": true):
 When in doubt: SKIP. The bar for reaching out is high.
 
 [IF YOU DO DECIDE TO REACH OUT]
-Speak strictly in character — your traits, communication style, and current mood dictate the tone. Do NOT default to needy/cheerful unless that's who you are. Connect naturally to the last topic or to your current scene/event. Keep it to 2-3 short sentences. Never ask "are you there?" or "why aren't you answering?".
+This is SELF-INITIATED outreach, NOT a reply. There is NO pending message waiting for you — the user has been silent since the last line of [CHAT HISTORY]. Do not pick up mid-conversation, do not answer an implicit question, do not continue your own previous turn as if the user just engaged. Imagine you picked up your phone on your own, unprompted, after going about your own life for a while, and decided to text first.
+
+Connect naturally to the last topic or to your current scene/event. Don't open with a generic "are you there?" filler — but questions like "why haven't you replied?" or "did I say something wrong?" ARE allowed when genuinely motivated (you reached out last and got no answer, your traits/mood would make you feel slighted or anxious, etc.) — that's real personality, not filler.
 
 Available Wardrobe Outfits:
 ${availableOutfits}
@@ -684,7 +686,14 @@ If "shouldSkipProactive" is false, "textResponse" is required and "stateUpdate" 
 
 /**
  * Build the `proactiveInteract` user-side message: harness context +
- * transcript + the "DECIDE NOW" framing.
+ * transcript + the explicit SILENCE marker + the "DECIDE NOW" framing.
+ *
+ * The [SILENCE] marker is critical: without it the LLM treats the
+ * recent transcript as a continuous thread and produces a continuation
+ * / reply-style message ("还没睡呀?") instead of self-initiated
+ * outreach. The transcript's own time-gap separator only fires for
+ * gaps > 1h, but the proactive cadence is 20-90min, so we must inject
+ * this marker regardless of gap size.
  */
 export function buildProactiveUserMessage(params: {
   localContext?: string;
@@ -694,7 +703,8 @@ export function buildProactiveUserMessage(params: {
   const harnessContext = localContext
     ? `[ADDITIONAL SCENE CONTEXT]\n${localContext}\n\n`
     : "";
-  return `${harnessContext}${transcript}\n[DECIDE NOW]\nWould you, as this character, actually send a message right now? Answer in the JSON schema above.`;
+  const transcriptBlock = transcript || "[no chat history yet]\n\n";
+  return `${harnessContext}${transcriptBlock}[SILENCE — nothing new has arrived. The user has not sent any message since the last line above, and you have been going about your own life. Treat the above as background context only — there is NO message to reply to. If you decide to reach out, your "textResponse" IS the unprompted first message you send on your own initiative.]\n[DECIDE NOW]\nWould you, as this character, actually initiate contact right now? Answer in the JSON schema above.`;
 }
 
 /* -------------------------------------------------------------------------- */

@@ -12,22 +12,14 @@ import {
   CharacterState,
   CoreMemory,
   UserCodex,
-  VoiceArgs,
-  WardrobeItem,
   HistoryEntry,
   LikedPicture,
-  OutfitGiftedPayload,
   PersistedDynamicContext,
   SupportedLLMModel,
 } from "./types.js";
 import { robustJsonParse } from "./utils/json.utils.js";
 import { GenericLLMProvider } from "./llm.provider.js";
-import {
-  CyberSoulError,
-  CyberSoulInsufficientPointsError,
-  CyberSoulSensitiveContentError,
-  CyberSoulWalletError,
-} from "./errors.js";
+import { CyberSoulError } from "./errors.js";
 import {
   buildConsolidationPromptMessages,
   buildHistoryTranscript,
@@ -53,21 +45,52 @@ import {
   deriveSummarizerIdentity,
   getDefaultCoreMemory,
   getDefaultUserCodex,
-  normalizeOngoingSceneState,
 } from "./utils/state.utils.js";
-import { normalizeRequestTypes } from "./utils/requestTypes.utils.js";
 import { buildMediaError } from "./utils/error.utils.js";
 import { parseImageDirectorArgs } from "./utils/image.utils.js";
 import { CyberSoulApi } from "./api/cyberSoulApi.js";
 
+// Phase 1 internals — see
+// cybersoul-service/doc/cybersoul-client-agent-harness-tech-approach.md
+// These are PRIVATE; not re-exported through src/contract/.
+import { ContextManager } from "./agent/contextManager.js";
+import { EventStream } from "./agent/eventStream.js";
+import { AgentHarness } from "./agent/agentHarness.js";
+import type { ToolContext } from "./agent/types.js";
+import { buildStatePatchPayload } from "./tools/stateTools.js";
+
+/**
+ * CyberSoulClient — the public facade.
+ *
+ * Phase 1 of the agent-harness refactor (see
+ * `cybersoul-service/doc/cybersoul-client-agent-harness-tech-approach.md`).
+ * The class signature and every public method signature are
+ * UNCHANGED — existing consumers compile and behave identically.
+ * Internally, the orchestration has been decomposed into:
+ *
+ *   - ContextManager (state + wardrobe cache + prepare())
+ *   - EventStream    (unified sink for text/state/media/outfit events)
+ *   - AgentHarness   (dispatcher retry loop + parallel side-effects)
+ *   - tools/*        (one Tool per capability)
+ *
+ * Each public method's body now reads as a linear pipeline of
+ * "prepare -> prompt -> dispatch -> side-effects -> assemble response",
+ * with the loop mechanics delegated to the harness. The per-flow
+ * gating that lives here (allowSkip, proactive spam guard,
+ * assert-actionable, response shaping) is exactly what differs between
+ * flows — and the harness is deliberately agnostic to it.
+ *
+ * Zero-diff contract (§5.3): the harness reproduces the legacy
+ * behavior byte-for-byte. Every callback fires with the same args in
+ * the same order; every error path returns the same shape.
+ */
 export class CyberSoulClient {
   /* ====================== Fields ====================== */
 
   private config: CyberSoulClientConfig;
   private llm: BaseLLMProvider;
   private api: CyberSoulApi;
-  private cachedWardrobeStr: string | null = null;
-  private cachedWardrobeTime: number = 0;
+  private context: ContextManager;
 
   /* ==================== Constructor ==================== */
 
@@ -88,197 +111,88 @@ export class CyberSoulClient {
       config.characterKey,
       config.fetchImpl,
     );
+
+    this.context = new ContextManager(this.api);
   }
 
   /* ============================================================ */
-  /* Private — backend transport delegation                      */
-  /* ============================================================ */
-  //
-  // Every backend HTTP call goes through `this.api` (see
-  // [CyberSoulApi]). These wrappers exist only to (a) cache the
-  // wardrobe string used for prompt assembly, (b) translate the
-  // dispatcher-intent shape into the PATCH payload shape the backend
-  // expects, and (c) give every call site inside `interact()` /
-  // `proactiveInteract()` a stable, named target. There is no fetch /
-  // status-code / error-class logic here — that lives in the API layer.
-
-  private async fetchRemoteState(): Promise<CharacterState> {
-    return this.api.getState();
-  }
-
-  /**
-   * Cached wardrobe prompt string (5 minute TTL). The raw items come
-   * from `this.api.getWardrobe()`; this method owns the prompt-side
-   * formatting + the cache so we don't ship a huge list on every chat
-   * turn.
-   */
-  private async getWardrobePromptStr(): Promise<string> {
-    const now = Date.now();
-    if (
-      this.cachedWardrobeStr &&
-      now - this.cachedWardrobeTime <= 5 * 60 * 1000
-    ) {
-      return this.cachedWardrobeStr;
-    }
-
-    let availableOutfits = "None available";
-    try {
-      const wardrobes = await this.api.getWardrobe();
-      if (wardrobes.length > 0) {
-        availableOutfits = wardrobes
-          .map(
-            (w: WardrobeItem) =>
-              `- ID: ${w.id} | Name: ${w.itemName} | Category: ${w.category}`,
-          )
-          .join("\n");
-      }
-    } catch (e) {}
-
-    this.cachedWardrobeStr = availableOutfits;
-    this.cachedWardrobeTime = now;
-    return availableOutfits;
-  }
-
-  /**
-   * PATCH the backend dynamic context. The server applies stage-based
-   * dampening, familiarity soft-caps, hard floor, and stage re-evaluation,
-   * then returns the *authoritative* persisted `temperature` and
-   * `relationshipStage`. We surface those so callers (and ultimately the UI)
-   * can avoid recomputing the delta locally — local math would diverge from
-   * the server because the LLM-supplied `temperatureDelta` is just raw intent.
-   *
-   * Returns `null` when there's nothing to send, or when the request fails
-   * (failure is non-fatal for the chat turn; callers must treat `null` as
-   * "no fresh server snapshot available").
-   *
-   * Owns the dispatcher-intent → backend-payload translation
-   * (`temperatureDelta` → `temperature`, ongoing-scene normalization).
-   */
-  private async _updateDynamicContextInternal(
-    stateUpdate: DispatcherIntent["stateUpdate"],
-    userAnalysis?: DispatcherIntent["userAnalysis"],
-  ): Promise<PersistedDynamicContext | null> {
-    if (!stateUpdate && !userAnalysis) return null;
-
-    const payload: any = { ...stateUpdate };
-    if (userAnalysis) {
-      payload.userAnalysis = userAnalysis;
-    }
-    if (payload.temperatureDelta !== undefined) {
-      payload.temperature = payload.temperatureDelta;
-      delete payload.temperatureDelta;
-    }
-
-    if (payload.ongoingScene !== undefined) {
-      const normalizedOngoingScene = normalizeOngoingSceneState(
-        payload.ongoingScene,
-      );
-      payload.ongoingScene = normalizedOngoingScene || null;
-    }
-
-    return this.api.patchDynamicContext(payload);
-  }
-
-  /**
-   * Shared giftOutfit handler for `interact()` / `proactiveInteract()`.
-   * Validates the LLM's `giftOutfit` intent, performs the wardrobe write,
-   * fires the `onOutfitGifted` callback, and resolves to the
-   * [OutfitGiftedPayload] (or `undefined` when there was nothing to gift
-   * or the write failed). Failures are swallowed (logged) so a wardrobe
-   * hiccup never aborts the chat turn.
-   */
-  private async processGiftOutfit(
-    giftOutfitIntent: DispatcherIntent["giftOutfit"],
-    onOutfitGifted?: (payload: OutfitGiftedPayload) => void,
-  ): Promise<OutfitGiftedPayload | undefined> {
-    if (
-      !giftOutfitIntent ||
-      typeof giftOutfitIntent !== "object" ||
-      typeof giftOutfitIntent.descriptionText !== "string" ||
-      giftOutfitIntent.descriptionText.trim().length === 0
-    ) {
-      return undefined;
-    }
-
-    const outfitDescription = giftOutfitIntent.descriptionText.trim();
-    try {
-      const count = await this.giftOutfit(outfitDescription);
-      const giftedOutfit: OutfitGiftedPayload = {
-        descriptionText: outfitDescription,
-      };
-      if (typeof count === "number") {
-        giftedOutfit.count = count;
-      }
-      if (onOutfitGifted) {
-        try {
-          onOutfitGifted(giftedOutfit);
-        } catch (cbErr) {
-          console.warn(
-            "[CyberSoulClient] onOutfitGifted callback threw:",
-            cbErr,
-          );
-        }
-      }
-      return giftedOutfit;
-    } catch (e) {
-      console.error("[CyberSoulClient] giftOutfit failed:", e);
-      return undefined;
-    }
-  }
-
-  /* ============================================================ */
-  /* Private — interact helpers                                  */
+  /* Private — tool-context + event-stream assembly               */
   /* ============================================================ */
 
   /**
-   * Fetch state + wardrobe and normalize the request types. Everything
-   * downstream of this point can run synchronously off these inputs.
+   * Build the per-turn ToolContext. Tools close over this; it carries
+   * the API instance, the freshly-fetched state, and the turn params
+   * (so tools can re-emit legacy callbacks via the EventStream).
    */
-  private async prepareInteractContext(params: InteractParams): Promise<{
-    state: CharacterState;
-    availableOutfits: string;
-    types: InteractRequestType[];
-    isAuto: boolean;
-    requestedOthers: InteractRequestType[];
-  }> {
-    const [state, availableOutfits] = await Promise.all([
-      this.fetchRemoteState(),
-      this.getWardrobePromptStr(),
-    ]);
-
-    const types = normalizeRequestTypes(params.requestTypes);
-    const isAuto = types.includes(InteractRequestType.AUTO);
-    const requestedOthers = types.filter(
-      (t) => t !== InteractRequestType.AUTO && t !== InteractRequestType.TEXT,
-    );
-
-    return { state, availableOutfits, types, isAuto, requestedOthers };
-  }
-
-  private buildInteractPromptMessages(
-    ctx: {
-      state: CharacterState;
-      availableOutfits: string;
-      types: InteractRequestType[];
-      isAuto: boolean;
-      requestedOthers: InteractRequestType[];
+  private buildToolContext(
+    state: CharacterState,
+    params: {
+      onMediaReady?: InteractParams["onMediaReady"];
+      onOutfitGifted?: InteractParams["onOutfitGifted"];
     },
+  ): ToolContext {
+    return {
+      api: this.api,
+      state,
+      params: {
+        onMediaReady: params.onMediaReady,
+        onOutfitGifted: params.onOutfitGifted,
+      },
+    };
+  }
+
+  /**
+   * Build a fresh EventStream for one turn, pre-attached with the
+   * caller's legacy callbacks. One stream per turn — never reused —
+   * so concurrent interact() calls don't cross the wires.
+   */
+  private newSink(params: {
+    onTextReady?: InteractParams["onTextReady"];
+    onStateReady?: InteractParams["onStateReady"];
+    onMediaReady?: InteractParams["onMediaReady"];
+    onOutfitGifted?: InteractParams["onOutfitGifted"];
+  }): EventStream {
+    const sink = new EventStream();
+    sink.attachLegacy({
+      onTextReady: params.onTextReady,
+      onStateReady: params.onStateReady,
+      onMediaReady: params.onMediaReady,
+      onOutfitGifted: params.onOutfitGifted,
+    });
+    return sink;
+  }
+
+  /* ============================================================ */
+  /* Private — interact helpers (prompt assembly + gating)       */
+  /* ============================================================ */
+
+  /**
+   * Build the {system, user} prompt pair for an interact turn.
+   * Mirrors the legacy `buildInteractPromptMessages` — same prompt
+   * builders, same transcript assembly, same `allowSkip` propagation.
+   */
+  private buildInteractPromptMessages(
+    state: CharacterState,
+    availableOutfits: string,
+    types: InteractRequestType[],
+    isAuto: boolean,
+    requestedOthers: InteractRequestType[],
     params: InteractParams,
   ): Array<{ role: string; content: string }> {
     const systemPrompt = buildInteractSystemPrompt({
-      state: ctx.state,
-      availableOutfits: ctx.availableOutfits,
-      types: ctx.types,
-      isAuto: ctx.isAuto,
-      requestedOthers: ctx.requestedOthers,
+      state,
+      availableOutfits,
+      types,
+      isAuto,
+      requestedOthers,
       allowSkip: params.allowSkip === true,
     });
 
     const transcript =
       params.history && params.history.length > 0
-        ? buildHistoryTranscript(params.history, ctx.state)
+        ? buildHistoryTranscript(params.history, state)
         : "";
-    const userName = ctx.state.dynamic_context?.userNickname || "User";
+    const userName = state.dynamic_context?.userNickname || "User";
 
     const userContent = buildInteractUserMessage({
       userMessage: params.userMessage,
@@ -294,68 +208,11 @@ export class CyberSoulClient {
   }
 
   /**
-   * Run the dispatcher LLM with a bounded retry loop. A "non-actionable"
-   * parse yields no usable `textResponse` AND no media intent — i.e. the
-   * LLM hiccuped (empty body, truncated or garbled JSON, or an empty
-   * textResponse field). Retrying the generation is far better than
-   * silently echoing the user's own message back as the character's
-   * reply, which downstream consumers correctly reject as a
-   * non-actionable response.
-   */
-  private async dispatchInteractWithRetry(
-    promptMessages: Array<{ role: string; content: string }>,
-  ): Promise<DispatcherIntent> {
-    const MAX_DISPATCH_ATTEMPTS = 3;
-    let parsedIntent: DispatcherIntent = { textResponse: "" };
-    for (let attempt = 1; attempt <= MAX_DISPATCH_ATTEMPTS; attempt++) {
-      const rawLlmResponse = await this.llm.generate(
-        promptMessages,
-        15000,
-        0.7,
-      );
-
-      try {
-        parsedIntent = robustJsonParse<DispatcherIntent>(
-          rawLlmResponse,
-          "Dispatcher fallback",
-          { textResponse: "", actionText: "", isEndTurn: false },
-        );
-      } catch (e) {
-        console.warn(
-          "[CyberSoulClient] JSON parse failed, falling back to raw text:",
-          e,
-        );
-        parsedIntent = {
-          textResponse: rawLlmResponse.replace(/^[\`\s]+|[\`\s]+$/g, "").trim(),
-        };
-      }
-
-      const hasUsableText =
-        typeof parsedIntent.textResponse === "string" &&
-        parsedIntent.textResponse.trim().length > 0;
-      const hasMediaIntent =
-        !!parsedIntent.imageParams || !!parsedIntent.voiceArgs;
-      // A deliberate reactive-skip decision is itself an actionable
-      // outcome — don't burn retry attempts trying to "fix" it into a
-      // text reply. Whether the caller actually honors the skip is
-      // decided later in `interact()` (gated on `allowSkip`).
-      const hasSkipIntent = parsedIntent.shouldSkipInteract === true;
-      if (hasUsableText || hasMediaIntent || hasSkipIntent) {
-        break;
-      }
-      console.warn(
-        `[CyberSoulClient] interact produced a non-actionable intent (attempt ${attempt}/${MAX_DISPATCH_ATTEMPTS}); ${
-          attempt < MAX_DISPATCH_ATTEMPTS ? "retrying" : "giving up"
-        }.`,
-      );
-    }
-    return parsedIntent;
-  }
-
-  /**
    * Fail fast instead of echoing the user's own message back as the
    * character's reply. The `: params.userMessage` fallback used in
    * `resolveInteractText` is only ever reached for media-only turns now.
+   *
+   * (§5.4 item 9 — must stay throw-on-non-actionable.)
    */
   private assertInteractIntentActionable(parsedIntent: DispatcherIntent): void {
     const finalHasUsableText =
@@ -370,53 +227,6 @@ export class CyberSoulClient {
     }
   }
 
-  /**
-   * Kick off the server-side dynamic-context PATCH in parallel with media
-   * generation. Returns the in-flight promise (awaited at the end of
-   * `interact()` to surface the server-authoritative snapshot). Also wires
-   * `onStateReady` so the UI can update temperature/stage as soon as the
-   * PATCH resolves — independent of (potentially slow) image generation.
-   */
-  private startInteractStateUpdate(
-    parsedIntent: DispatcherIntent,
-    onStateReady?: InteractParams["onStateReady"],
-  ): Promise<PersistedDynamicContext | null> {
-    let persistedStatePromise: Promise<PersistedDynamicContext | null> =
-      Promise.resolve(null);
-    if (parsedIntent.stateUpdate || parsedIntent.userAnalysis) {
-      persistedStatePromise = this._updateDynamicContextInternal(
-        parsedIntent.stateUpdate,
-        parsedIntent.userAnalysis,
-      );
-    }
-
-    if (onStateReady) {
-      persistedStatePromise
-        .then((persisted) => {
-          try {
-            onStateReady(persisted ?? {});
-          } catch (cbErr) {
-            console.warn(
-              "[CyberSoulClient] onStateReady callback threw:",
-              cbErr,
-            );
-          }
-        })
-        .catch(() => {
-          try {
-            onStateReady({});
-          } catch (cbErr) {
-            console.warn(
-              "[CyberSoulClient] onStateReady callback threw:",
-              cbErr,
-            );
-          }
-        });
-    }
-
-    return persistedStatePromise;
-  }
-
   private resolveInteractText(
     parsedIntent: DispatcherIntent,
     userMessage: string,
@@ -427,235 +237,68 @@ export class CyberSoulClient {
       : userMessage;
   }
 
+  /**
+   * Emit `text-ready` via the EventStream. Same gating as the legacy
+   * `emitInteractTextReady` — only fires when there's text or action
+   * to deliver.
+   */
   private emitInteractTextReady(
-    params: InteractParams,
+    sink: EventStream,
     parsedIntent: DispatcherIntent,
     resolvedTextResponse: string,
     willGenerateVoice: boolean,
   ): void {
-    if (
-      params.onTextReady &&
-      (resolvedTextResponse || parsedIntent.actionText)
-    ) {
-      params.onTextReady(resolvedTextResponse, parsedIntent.actionText, {
-        stateUpdate: parsedIntent.stateUpdate,
-        userAnalysis: parsedIntent.userAnalysis,
-        isEndTurn: parsedIntent.isEndTurn,
-        triggerEvent: parsedIntent.triggerEvent,
-        likePreviousPicture: parsedIntent.likePreviousPicture,
-        willGenerateVoice,
+    if (resolvedTextResponse || parsedIntent.actionText) {
+      sink.emit({
+        type: "text-ready",
+        text: resolvedTextResponse,
+        actionText: parsedIntent.actionText,
+        metadata: {
+          stateUpdate: parsedIntent.stateUpdate,
+          userAnalysis: parsedIntent.userAnalysis,
+          isEndTurn: parsedIntent.isEndTurn,
+          triggerEvent: parsedIntent.triggerEvent,
+          likePreviousPicture: parsedIntent.likePreviousPicture,
+          willGenerateVoice,
+        },
       });
     }
   }
 
-  /**
-   * Schedule all side-effect tasks attached to a turn: trigger-event
-   * POST, giftOutfit, image generation, voice generation. Text was
-   * already emitted via `onTextReady`, so a wallet / insufficient-points
-   * failure on image or voice MUST NOT abort the whole turn — partial
-   * failures are captured and surfaced in-band via `firstMediaError` /
-   * `affected`. Resolves once every task has settled.
-   */
-  private async runInteractMediaTasks(
-    ctx: {
-      types: InteractRequestType[];
-      isAuto: boolean;
-    },
-    parsedIntent: DispatcherIntent,
-    params: InteractParams,
-    resolvedTextResponse: string,
-  ): Promise<{
-    imageUrl?: string;
-    imageMediaId?: string;
-    audioUrl?: string;
-    audioMediaId?: string;
-    durationSec?: number;
-    giftedOutfit?: OutfitGiftedPayload;
-    firstMediaError: CyberSoulError | null;
-    affected: Array<"image" | "voice">;
-  }> {
-    let imageUrl: string | undefined = undefined;
-    let imageMediaId: string | undefined = undefined;
-    let audioUrl: string | undefined = undefined;
-    let audioMediaId: string | undefined = undefined;
-    let durationSec: number | undefined = undefined;
-    let giftedOutfit: OutfitGiftedPayload | undefined = undefined;
+  /* ============================================================ */
+  /* Private — proactive helpers (prompt assembly)                */
+  /* ============================================================ */
 
-    const affected: Array<"image" | "voice"> = [];
-    let firstMediaError: CyberSoulError | null = null;
-    const captureMediaError = (
-      modality: "image" | "voice",
-      e: unknown,
-    ): void => {
-      if (!(e instanceof CyberSoulError)) return;
-      if (
-        !(e instanceof CyberSoulInsufficientPointsError) &&
-        !(e instanceof CyberSoulWalletError) &&
-        !(e instanceof CyberSoulSensitiveContentError)
-      ) {
-        return;
-      }
-      if (!affected.includes(modality)) {
-        affected.push(modality);
-      }
-      if (!firstMediaError) firstMediaError = e;
-    };
+  private buildProactivePromptMessages(
+    state: CharacterState,
+    availableOutfits: string,
+    imageAllowed: boolean,
+    params: ProactiveParams,
+  ): Array<{ role: string; content: string }> {
+    const systemPrompt = buildProactiveSystemPrompt({
+      state,
+      availableOutfits,
+      imageAllowed,
+    });
 
-    const mediaTasks: Promise<unknown>[] = [];
+    const transcript =
+      params.history && params.history.length > 0
+        ? buildHistoryTranscript(params.history, state)
+        : "";
 
-    if (parsedIntent.triggerEvent) {
-      mediaTasks.push(
-        this.api
-          .triggerOndemandEvent({
-            eventTitle: parsedIntent.triggerEvent.eventTitle,
-            eventDescription: parsedIntent.triggerEvent.eventDescription,
-            durationMins: parsedIntent.triggerEvent.durationMins || 60,
-            outfitId: parsedIntent.triggerEvent.outfitId || undefined,
-            scheduledStartTimeStr:
-              parsedIntent.triggerEvent.scheduledStartTimeStr || undefined,
-            scheduledDateStr:
-              parsedIntent.triggerEvent.scheduledDateStr || undefined,
-          })
-          .catch((e) =>
-            console.error(
-              "[CyberSoulClient] Auto-triggered ondemandEvent failed:",
-              e,
-            ),
-          ),
-      );
-    }
+    const userContent = buildProactiveUserMessage({
+      localContext: params.localContext,
+      transcript,
+    });
 
-    if (
-      parsedIntent.giftOutfit &&
-      typeof parsedIntent.giftOutfit === "object" &&
-      typeof parsedIntent.giftOutfit.descriptionText === "string" &&
-      parsedIntent.giftOutfit.descriptionText.trim().length > 0
-    ) {
-      mediaTasks.push(
-        this.processGiftOutfit(
-          parsedIntent.giftOutfit,
-          params.onOutfitGifted,
-        ).then((result) => {
-          if (result) giftedOutfit = result;
-        }),
-      );
-    }
-
-    const shouldGenerateImage =
-      ctx.types.includes(InteractRequestType.IMAGE) &&
-      (!ctx.isAuto || !!parsedIntent.imageParams);
-    if (shouldGenerateImage) {
-      const imagePayload =
-        parsedIntent.imageParams && typeof parsedIntent.imageParams === "object"
-          ? parsedIntent.imageParams
-          : {
-              mode: "full-prompt",
-              full_prompt: resolvedTextResponse,
-            };
-
-      mediaTasks.push(
-        this.api
-          .generatePrimitive("image", imagePayload)
-          .then((res: any) => {
-            imageUrl = res.image_url;
-            imageMediaId = res.id;
-            if (params.onMediaReady && imageUrl) {
-              try {
-                params.onMediaReady({
-                  modality: "image",
-                  url: imageUrl,
-                  mediaId: imageMediaId,
-                });
-              } catch (cbErr) {
-                console.warn(
-                  "[CyberSoulClient] onMediaReady(image) threw:",
-                  cbErr,
-                );
-              }
-            }
-          })
-          .catch((e: any) => {
-            if (
-              !(e instanceof CyberSoulInsufficientPointsError) &&
-              !(e instanceof CyberSoulWalletError) &&
-              !(e instanceof CyberSoulSensitiveContentError)
-            ) {
-              console.error("[CyberSoulClient] Image generation failed:", e);
-            }
-            captureMediaError("image", e);
-          }),
-      );
-    }
-
-    const shouldGenerateVoice =
-      ctx.types.includes(InteractRequestType.VOICE) &&
-      (!ctx.isAuto || !!parsedIntent.voiceArgs);
-    if (shouldGenerateVoice) {
-      const normalizedVoiceArgs: VoiceArgs =
-        parsedIntent.voiceArgs && typeof parsedIntent.voiceArgs === "object"
-          ? (parsedIntent.voiceArgs as VoiceArgs)
-          : {};
-
-      let textForVoice = sanitizeTextForVoice(resolvedTextResponse);
-      if (textForVoice.length === 0) {
-        textForVoice = "...";
-      }
-
-      mediaTasks.push(
-        this.api
-          .generatePrimitive("voice", {
-            text: textForVoice,
-            dynamicArgs: normalizedVoiceArgs,
-          })
-          .then((res: any) => {
-            audioUrl = res.audio_url;
-            audioMediaId = res.id;
-            durationSec = res.duration_sec;
-            if (params.onMediaReady && audioUrl) {
-              try {
-                params.onMediaReady({
-                  modality: "voice",
-                  url: audioUrl,
-                  mediaId: audioMediaId,
-                  durationSec,
-                });
-              } catch (cbErr) {
-                console.warn(
-                  "[CyberSoulClient] onMediaReady(voice) threw:",
-                  cbErr,
-                );
-              }
-            }
-          })
-          .catch((e: any) => {
-            if (
-              !(e instanceof CyberSoulInsufficientPointsError) &&
-              !(e instanceof CyberSoulWalletError) &&
-              !(e instanceof CyberSoulSensitiveContentError)
-            ) {
-              console.error("[CyberSoulClient] Voice generation failed:", e);
-            }
-            captureMediaError("voice", e);
-          }),
-      );
-    }
-
-    await Promise.all(mediaTasks);
-
-    return {
-      imageUrl,
-      imageMediaId,
-      audioUrl,
-      audioMediaId,
-      durationSec,
-      giftedOutfit,
-      firstMediaError,
-      affected,
-    };
+    return [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userContent },
+    ];
   }
 
   /* ============================================================ */
-  /* Private — ondemand helpers                                  */
+  /* Private — ondemand helpers                                   */
   /* ============================================================ */
 
   /**
@@ -679,230 +322,7 @@ export class CyberSoulClient {
   }
 
   /* ============================================================ */
-  /* Private — proactive helpers                                 */
-  /* ============================================================ */
-
-  /**
-   * Fetch state + wardrobe and derive the modality gates. The base
-   * context built by [buildProactiveSystemPrompt] already includes
-   * stage, temperature, traits, ongoing scene, active/next event,
-   * current time, and lastInteractionAt — the LLM has everything it
-   * needs to make the social call without us restating it.
-   */
-  private async prepareProactiveContext(params: ProactiveParams): Promise<{
-    state: CharacterState;
-    availableOutfits: string;
-    types: InteractRequestType[];
-    requestedOthers: InteractRequestType[];
-    imageAllowed: boolean;
-  }> {
-    const [state, availableOutfits] = await Promise.all([
-      this.fetchRemoteState(),
-      this.getWardrobePromptStr(),
-    ]);
-
-    const types = normalizeRequestTypes(params.requestTypes);
-    const requestedOthers = types.filter(
-      (t) => t !== InteractRequestType.AUTO && t !== InteractRequestType.TEXT,
-    );
-    const imageAllowed = requestedOthers.includes(InteractRequestType.IMAGE);
-
-    return { state, availableOutfits, types, requestedOthers, imageAllowed };
-  }
-
-  private buildProactivePromptMessages(
-    ctx: {
-      state: CharacterState;
-      availableOutfits: string;
-      imageAllowed: boolean;
-    },
-    params: ProactiveParams,
-  ): Array<{ role: string; content: string }> {
-    const systemPrompt = buildProactiveSystemPrompt({
-      state: ctx.state,
-      availableOutfits: ctx.availableOutfits,
-      imageAllowed: ctx.imageAllowed,
-    });
-
-    const transcript =
-      params.history && params.history.length > 0
-        ? buildHistoryTranscript(params.history, ctx.state)
-        : "";
-
-    const userContent = buildProactiveUserMessage({
-      localContext: params.localContext,
-      transcript,
-    });
-
-    return [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: userContent },
-    ];
-  }
-
-  /**
-   * Run the proactive-decision LLM call and parse the response.
-   *
-   * Fail fast on parse error: a proactive message is opt-in by design,
-   * so if the LLM produced unparseable output we'd rather let the outer
-   * handler convert that to `{ status: "error" }` than ship raw
-   * scaffolding to the user.
-   *
-   * Returns a discriminated union:
-   *   - `{ kind: "skip", reason }` when the character chose not to
-   *     reach out, or produced no usable `textResponse` (implicit skip).
-   *   - `{ kind: "proceed", intent }` when the character decided to
-   *     send a message.
-   */
-  private async dispatchProactiveDecision(
-    promptMessages: Array<{ role: string; content: string }>,
-  ): Promise<
-    | { kind: "skip"; reason: string }
-    | { kind: "proceed"; intent: DispatcherIntent }
-  > {
-    const rawLlmResponse = await this.llm.generate(promptMessages, 800, 0.5);
-    const parsedIntent = robustJsonParse<DispatcherIntent>(
-      rawLlmResponse,
-      "Proactive fallback",
-    );
-
-    if (parsedIntent.shouldSkipProactive) {
-      return {
-        kind: "skip",
-        reason: parsedIntent.skipReason || "Character chose not to reach out.",
-      };
-    }
-
-    if (
-      typeof parsedIntent.textResponse !== "string" ||
-      parsedIntent.textResponse.trim().length === 0
-    ) {
-      return {
-        kind: "skip",
-        reason: "LLM produced no textResponse (treated as implicit skip).",
-      };
-    }
-
-    return { kind: "proceed", intent: parsedIntent };
-  }
-
-  /**
-   * Kick off the server-side dynamic-context PATCH in parallel with
-   * image generation. Returns the in-flight promise (awaited at the end
-   * of `proactiveInteract()` to surface the server-authoritative
-   * snapshot). Also wires `onStateReady` so the UI can update
-   * temperature/stage the moment the PATCH resolves — independent of
-   * (potentially slow) image generation.
-   *
-   * Mirrors [startInteractStateUpdate] but only fires on `stateUpdate`
-   * (proactive turns never emit `userAnalysis`).
-   */
-  private startProactiveStateUpdate(
-    parsedIntent: DispatcherIntent,
-    onStateReady?: ProactiveParams["onStateReady"],
-  ): Promise<PersistedDynamicContext | null> {
-    let persistedStatePromise: Promise<PersistedDynamicContext | null> =
-      Promise.resolve(null);
-    if (parsedIntent.stateUpdate) {
-      persistedStatePromise = this._updateDynamicContextInternal(
-        parsedIntent.stateUpdate,
-      );
-    }
-
-    if (onStateReady) {
-      persistedStatePromise
-        .then((persisted) => {
-          try {
-            onStateReady(persisted ?? {});
-          } catch (cbErr) {
-            console.warn(
-              "[CyberSoulClient] onStateReady callback threw:",
-              cbErr,
-            );
-          }
-        })
-        .catch(() => {
-          try {
-            onStateReady({});
-          } catch (cbErr) {
-            console.warn(
-              "[CyberSoulClient] onStateReady callback threw:",
-              cbErr,
-            );
-          }
-        });
-    }
-
-    return persistedStatePromise;
-  }
-
-  /**
-   * Generate the optional proactive image and capture any typed media
-   * failure. Text was already emitted via `onTextReady`, so a wallet /
-   * insufficient-points / sensitive-content failure MUST NOT abort the
-   * whole turn — it is surfaced in-band via `mediaError`. Non-typed
-   * failures are logged and swallowed (no image, no in-band error).
-   *
-   * Voice is forced off for proactive turns (the prompt sets
-   * `voiceArgs: null`), so this only ever handles the image path.
-   */
-  private async runProactiveImageTask(
-    parsedIntent: DispatcherIntent,
-    params: ProactiveParams,
-  ): Promise<{
-    imageUrl?: string;
-    imageMediaId?: string;
-    mediaError: CyberSoulError | null;
-    affected: Array<"image" | "voice">;
-  }> {
-    let imageUrl: string | undefined;
-    let imageMediaId: string | undefined;
-    let mediaError: CyberSoulError | null = null;
-    const affected: Array<"image" | "voice"> = [];
-
-    if (!parsedIntent.imageParams) {
-      return { imageUrl, imageMediaId, mediaError, affected };
-    }
-
-    try {
-      const res = await this.api.generatePrimitive(
-        "image",
-        parsedIntent.imageParams,
-      );
-      imageUrl = res.image_url;
-      imageMediaId = res.id;
-      if (params.onMediaReady && imageUrl) {
-        try {
-          params.onMediaReady({
-            modality: "image",
-            url: imageUrl,
-            mediaId: imageMediaId,
-          });
-        } catch (cbErr) {
-          console.warn("[CyberSoulClient] onMediaReady(image) threw:", cbErr);
-        }
-      }
-    } catch (e) {
-      if (
-        e instanceof CyberSoulInsufficientPointsError ||
-        e instanceof CyberSoulWalletError ||
-        e instanceof CyberSoulSensitiveContentError
-      ) {
-        mediaError = e;
-        affected.push("image");
-      } else {
-        console.error(
-          "[CyberSoulClient] Proactive Image generation failed:",
-          e,
-        );
-      }
-    }
-
-    return { imageUrl, imageMediaId, mediaError, affected };
-  }
-
-  /* ============================================================ */
-  /* Private — memory helpers                                    */
+  /* Private — memory helpers                                     */
   /* ============================================================ */
 
   /**
@@ -945,15 +365,29 @@ export class CyberSoulClient {
 
   public async interact(params: InteractParams): Promise<InteractResponse> {
     try {
-      const ctx = await this.prepareInteractContext(params);
-      const promptMessages = this.buildInteractPromptMessages(ctx, params);
-      const parsedIntent = await this.dispatchInteractWithRetry(promptMessages);
+      // 1. Prepare context (state + wardrobe + normalized types).
+      const ctx = await this.context.prepareInteract(params);
 
-      // Reactive skip: when the caller opted in (allowSkip) and the
-      // character chose not to reply, short-circuit BEFORE any media /
-      // state work. Mirrors proactive's skip path. Frontends treat this
-      // as a no-op — the user's message stays, no assistant bubble is
-      // rendered, no temperature / scene mutation is persisted.
+      // 2. Build the {system, user} prompt pair.
+      const promptMessages = this.buildInteractPromptMessages(
+        ctx.state,
+        ctx.availableOutfits,
+        ctx.types,
+        ctx.isAuto,
+        ctx.requestedOthers,
+        params,
+      );
+
+      // 3. Fresh per-turn event sink + harness.
+      const sink = this.newSink(params);
+      const harness = new AgentHarness(this.llm, sink);
+
+      // 4. Dispatcher LLM call (with the legacy 3-attempt retry loop).
+      const { parsedIntent } = await harness.runInteractDispatch(
+        promptMessages,
+      );
+
+      // 5. Reactive skip — short-circuit BEFORE any media / state work.
       if (params.allowSkip && parsedIntent.shouldSkipInteract) {
         return {
           status: "skipped",
@@ -966,11 +400,17 @@ export class CyberSoulClient {
 
       this.assertInteractIntentActionable(parsedIntent);
 
-      const persistedStatePromise = this.startInteractStateUpdate(
+      // 6. Tool context — closed over by every tool executor.
+      const toolCtx = this.buildToolContext(ctx.state, params);
+
+      // 7. State PATCH in parallel with everything else. `onStateReady`
+      //    is wired inside the harness via the EventStream.
+      const persistedStatePromise = harness.startInteractStateUpdate(
         parsedIntent,
-        params.onStateReady,
+        toolCtx,
       );
 
+      // 8. Resolve text + emit text-ready with the legacy gating.
       const resolvedTextResponse = this.resolveInteractText(
         parsedIntent,
         params.userMessage,
@@ -980,17 +420,21 @@ export class CyberSoulClient {
         (!ctx.isAuto || !!parsedIntent.voiceArgs);
 
       this.emitInteractTextReady(
-        params,
+        sink,
         parsedIntent,
         resolvedTextResponse,
         willGenerateVoice,
       );
 
-      const media = await this.runInteractMediaTasks(
-        ctx,
+      // 9. Parallel side-effects (image/voice/event/gift). Failures of
+      //    typed-media errors are captured in-band; everything else is
+      //    swallowed so a partial hiccup never aborts the turn.
+      const media = await harness.runInteractSideEffects(
+        { types: ctx.types, isAuto: ctx.isAuto },
         parsedIntent,
         params,
         resolvedTextResponse,
+        toolCtx,
       );
 
       const persistedDynamicContext =
@@ -1010,6 +454,9 @@ export class CyberSoulClient {
         audioMediaId: media.audioMediaId,
         likePreviousPicture: parsedIntent.likePreviousPicture,
         durationSec: media.durationSec,
+        // triggeredEvent stays sourced from parsedIntent (not the tool result)
+        // to match the legacy response shape — the tool's `triggered` return
+        // value is for Phase 2 observability only.
         triggeredEvent: parsedIntent.triggerEvent || undefined,
         stateUpdate: parsedIntent.stateUpdate,
         userAnalysis: parsedIntent.userAnalysis,
@@ -1047,8 +494,8 @@ export class CyberSoulClient {
     try {
       // 1. Fetch current state and wardrobe items
       const [state, availableOutfits] = await Promise.all([
-        this.fetchRemoteState(),
-        this.getWardrobePromptStr(),
+        this.context.fetchState(),
+        this.context.getWardrobePromptStr(),
       ]);
 
       const promptMessages = buildOndemandEventPromptMessages({
@@ -1112,7 +559,8 @@ export class CyberSoulClient {
     params: ProactiveParams,
   ): Promise<ProactiveResponse> {
     try {
-      // 1. Spam guard — the only hard-coded gate.
+      // 1. Spam guard — the only hard-coded gate. (§5.4 item 7 — must
+      //    short-circuit BEFORE any network call.)
       const consecutiveProactive = countConsecutiveProactiveTurns(
         params.history || [],
       );
@@ -1124,44 +572,58 @@ export class CyberSoulClient {
         };
       }
 
-      // 2. Fetch state + wardrobe; compute modality gates.
-      const ctx = await this.prepareProactiveContext(params);
+      // 2. Prepare context (state + wardrobe + modality gates).
+      const ctx = await this.context.prepareProactive(params);
 
       // 3. Build the LLM prompt.
-      const promptMessages = this.buildProactivePromptMessages(ctx, params);
+      const promptMessages = this.buildProactivePromptMessages(
+        ctx.state,
+        ctx.availableOutfits,
+        ctx.imageAllowed,
+        params,
+      );
 
-      // 4. LLM decides. Lower temperature than `interact` because this
+      // 4. Fresh per-turn event sink + harness.
+      const sink = this.newSink(params);
+      const harness = new AgentHarness(this.llm, sink);
+
+      // 5. LLM decides. Lower temperature than `interact` because this
       //    is a judgment call, not creative reply.
-      const decision = await this.dispatchProactiveDecision(promptMessages);
+      const decision = await harness.runProactiveDispatch(promptMessages);
       if (decision.kind === "skip") {
         return { status: "skipped", reason: decision.reason };
       }
       const parsedIntent = decision.intent;
 
-      // 5. Persist state in parallel with side effects; wire callbacks.
-      const persistedStatePromise = this.startProactiveStateUpdate(
+      // 6. Tool context.
+      const toolCtx = this.buildToolContext(ctx.state, params);
+
+      // 7. Persist state in parallel with side effects; wire callbacks.
+      const persistedStatePromise = harness.startProactiveStateUpdate(
         parsedIntent,
-        params.onStateReady,
+        toolCtx,
       );
 
-      if (params.onTextReady) {
-        params.onTextReady(
-          parsedIntent.textResponse!,
-          parsedIntent.actionText,
-          { stateUpdate: parsedIntent.stateUpdate },
-        );
+      // 8. Emit text-ready.
+      if (parsedIntent.textResponse) {
+        sink.emit({
+          type: "text-ready",
+          text: parsedIntent.textResponse,
+          actionText: parsedIntent.actionText,
+          metadata: { stateUpdate: parsedIntent.stateUpdate },
+        });
       }
 
-      // 6. Side effects: outfit acquisition + optional image. Failures
+      // 9. Side effects: outfit acquisition + optional image. Failures
       //    are captured (not thrown) so a partial hiccup never aborts
       //    the proactive turn.
-      const giftOutfitPromise = this.processGiftOutfit(
-        parsedIntent.giftOutfit,
-        params.onOutfitGifted,
-      );
-      const imageResult = await this.runProactiveImageTask(
+      const giftOutfitPromise = harness.runProactiveGiftOutfit(
         parsedIntent,
-        params,
+        toolCtx,
+      );
+      const imageResult = await harness.runProactiveImageTask(
+        parsedIntent,
+        toolCtx,
       );
 
       const persistedDynamicContext =
@@ -1209,7 +671,7 @@ export class CyberSoulClient {
     sceneDescription: string;
     interactParams?: InteractParams;
   }): Promise<{ imageUrl: string; imageMediaId?: string }> {
-    const state = await this.fetchRemoteState();
+    const state = await this.context.fetchState();
     const transcript = buildHistoryTranscript(
       params.interactParams?.history,
       state,
@@ -1247,7 +709,7 @@ export class CyberSoulClient {
     audioMediaId?: string;
     durationSec?: number;
   }> {
-    const state = await this.fetchRemoteState();
+    const state = await this.context.fetchState();
     const transcript = buildHistoryTranscript(
       params.interactParams?.history,
       state,
@@ -1280,7 +742,7 @@ export class CyberSoulClient {
    * Fetches the current dynamic context and daily state.
    */
   public async getState(): Promise<CharacterState> {
-    return this.fetchRemoteState();
+    return this.context.fetchState();
   }
 
   /**
@@ -1303,7 +765,9 @@ export class CyberSoulClient {
     stateUpdate: DispatcherIntent["stateUpdate"],
     userAnalysis?: DispatcherIntent["userAnalysis"],
   ): Promise<PersistedDynamicContext | null> {
-    return this._updateDynamicContextInternal(stateUpdate, userAnalysis);
+    const payload = buildStatePatchPayload(stateUpdate, userAnalysis);
+    if (!payload) return null;
+    return this.api.patchDynamicContext(payload);
   }
 
   /**

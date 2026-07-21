@@ -3,6 +3,21 @@ export interface GenericLLMConfig {
   apiKey: string;
   model: string;
   customSettings?: Record<string, any>;
+  /**
+   * Phase 2 — explicit capability hints. When omitted, the SDK
+   * auto-detects tool-calling support from the backend template
+   * (presence of `toolsPayloadTemplate` + `toolCallsResponsePath` +
+   * `toolCallArgsResponsePath`). When provided, the explicit hint
+   * wins — useful for forcing the JSON-dispatcher path (`toolCalling:
+   * false`) even when the template supports tools, e.g. for A/B
+   * comparison during shadow mode (§5.2 Layer C).
+   */
+  capabilities?: {
+    /** Opt into native tool-calling. Default: auto-detect from template. */
+    toolCalling?: boolean;
+    /** Reserved for Phase 4 — streaming text deltas. */
+    streaming?: boolean;
+  };
 }
 
 export interface CyberSoulClientConfig {
@@ -459,12 +474,119 @@ export interface CharacterState {
   user_codex?: UserCodex;
 }
 
+/* -------------------------------------------------------------------------- */
+/* Phase 2 — native tool-calling types                                         */
+/* -------------------------------------------------------------------------- */
+//
+// See cybersoul-service/doc/cybersoul-client-agent-harness-tech-approach.md
+// §3.3 + §3.3.1 + §4 Phase 2. These types let the SDK pass tool
+// declarations to an LLM and receive parsed tool_calls back, WITHOUT
+// embedding a JSON schema in the prompt or relying on robustJsonParse.
+//
+// They are additive to the public contract — existing callers that
+// only use `generate()` are unaffected. A provider signals tool-calling
+// support by implementing the optional `chat()` method on
+// BaseLLMProvider; the harness checks for its presence before routing
+// to the tool-calling dispatch path.
+
+/**
+ * One tool declaration sent to the LLM. Provider-agnostic canonical
+ * shape — `GenericLLMProvider` translates this into the template's
+ * `toolsPayloadTemplate` format at call time.
+ *
+ * Derived 1:1 from the SDK's internal `Tool` type (name + description +
+ * inputSchema). The registry produces these from its registered tools.
+ */
+export interface LLMToolDeclaration {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+}
+
+/**
+ * One tool call parsed from the LLM's response. Mirrors the
+ * OpenAI/MiniMax shape (which most providers follow); the provider
+ * adapter translates from the raw response format into this shape.
+ *
+ * `arguments` is a raw JSON string (matching provider conventions) —
+ * callers `JSON.parse()` it. With native tool-calling this parse
+ * CANNOT fail because the provider enforced the schema at decode time
+ * (see §3.3.1).
+ */
+export interface LLMToolCall {
+  /** Tool name. Matches `LLMToolDeclaration.name` the provider received. */
+  name: string;
+  /** Raw JSON-string arguments. Schema-conformant by construction. */
+  arguments: string;
+}
+
+/**
+ * Result of a tool-calling LLM turn. The harness uses `toolCalls` to
+ * dispatch side-effects and `textResponse` to emit `text-ready`.
+ *
+ * A turn may have:
+ *  - tool calls only (no text) — the model is mid-trajectory
+ *  - text only (no tool calls) — the model produced a final reply
+ *  - both — the model emitted text alongside tool calls
+ *  - neither — the model declined to act (treated as skip / non-actionable)
+ */
+export interface LLMChatResult {
+  /** Spoken/assistant text, if any. Empty string when absent. */
+  textResponse: string;
+  /** Tool calls parsed from the response, if any. Empty array when absent. */
+  toolCalls: LLMToolCall[];
+}
+
 export interface BaseLLMProvider {
   generate(
     messages: { role: string; content: string }[],
     maxTokens?: number,
     temperature?: number,
   ): Promise<string>;
+
+  /**
+   * OPTIONAL Phase 2 native tool-calling method. A provider that
+   * supports tool-calling implements this; the harness checks for its
+   * presence via `'chat' in provider` before routing to the tool-
+   * calling dispatch path.
+   *
+   * When called, the provider must:
+   *   1. Translate `tools` into the provider's tool-declaration format
+   *      (using the backend template's `toolsPayloadTemplate`).
+   *   2. Inject them into the request payload alongside `messages`.
+   *   3. Run inference with constrained decoding active (provider-side).
+   *   4. Parse `tool_calls` from the response using the template's
+   *      `toolCallsResponsePath` + `toolCallArgsResponsePath`.
+   *   5. Return the normalized `LLMChatResult`.
+   *
+   * Providers that don't support tool-calling simply omit this method —
+   * callers MUST NOT assume it exists. Use `supportsToolCalling(provider)`
+   * to check.
+   *
+   * NOTE: streaming is out of scope for Phase 2 (that's Phase 4). This
+   * method returns the complete result; `textResponse` arrives whole,
+   * not as deltas.
+   */
+  chat?(params: {
+    messages: { role: string; content: string }[];
+    tools: LLMToolDeclaration[];
+    maxTokens?: number;
+    temperature?: number;
+  }): Promise<LLMChatResult>;
+}
+
+/**
+ * Runtime capability check. Returns true iff the provider implements
+ * the optional `chat()` method. The harness uses this to decide which
+ * dispatch path to take.
+ *
+ * Exported as part of the public contract so callers building custom
+ * providers can also gate on it.
+ */
+export function supportsToolCalling(
+  provider: BaseLLMProvider,
+): provider is BaseLLMProvider & { chat: NonNullable<BaseLLMProvider['chat']> } {
+  return typeof (provider as BaseLLMProvider).chat === 'function';
 }
 
 export type ModelCustomConfigValueType =

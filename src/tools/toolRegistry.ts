@@ -20,6 +20,7 @@
  */
 
 import type { Tool } from "../agent/types.js";
+import type { LLMToolDeclaration } from "../types.js";
 
 export class ToolRegistry {
   private readonly tools = new Map<string, Tool>();
@@ -30,6 +31,15 @@ export class ToolRegistry {
     }
   }
 
+  /**
+   * Register a tool. The concrete `Tool<TArgs, TResult>` is erased to
+   * `Tool` (the unconstrained default) on insertion — the registry
+   * does not need the type parameters, and erasure lets tools with
+   * different arg shapes coexist in one registry without contravariance
+   * gymnastics. Callers that retrieve a tool via `get()` and invoke its
+   * executor are responsible for knowing the tool's arg shape (they
+   * built it, so they know).
+   */
   register(tool: Tool): this {
     if (this.tools.has(tool.name)) {
       throw new Error(`Tool already registered: ${tool.name}`);
@@ -73,5 +83,36 @@ export class ToolRegistry {
       };
     }
     return doc;
+  }
+
+  /**
+   * Phase 2 — build native tool declarations for `provider.chat()`.
+   * Returns the canonical `LLMToolDeclaration[]` shape that
+   * `GenericLLMProvider.chat()` will inject into the request payload
+   * via the template's `toolsPayloadTemplate`.
+   *
+   * Excludes signal tools whose executors throw in Phase 1 (the
+   * `speak`/`like_picture`/`end_turn`/`skip_turn`/`skip_proactive`
+   * placeholders) when `opts.excludeSignalTools` is true — those
+   * become real tool declarations too in Phase 2, but a caller who
+   * only wants the side-effecting tools can filter them out.
+   */
+  buildToolDeclarations(opts?: {
+    excludeSignalTools?: boolean;
+  }): LLMToolDeclaration[] {
+    const SIGNAL_TOOLS = new Set([
+      "speak",
+      "like_picture",
+      "end_turn",
+      "skip_turn",
+      "skip_proactive",
+    ]);
+    return this.list()
+      .filter((t) => !opts?.excludeSignalTools || !SIGNAL_TOOLS.has(t.name))
+      .map((t) => ({
+        name: t.name,
+        description: t.description,
+        inputSchema: t.inputSchema,
+      }));
   }
 }

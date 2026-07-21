@@ -18,7 +18,7 @@
     "build": "node scripts/generate-version.mjs && tsc",
     "prepare": "npm run build",
     "version": "node scripts/generate-version.mjs && git add src/version.ts",
-    "test": "npm run build && node dist/utils/json.utils.test.js && node dist/agent/contextManager.test.js && node dist/agent/eventStream.test.js && node dist/tools/stateTools.test.js"
+    "test": "npm run build && node dist/utils/json.utils.test.js && node dist/agent/contextManager.test.js && node dist/agent/eventStream.test.js && node dist/tools/stateTools.test.js && node dist/tools/toolCallsToIntent.test.js"
   },
   "keywords": [
     "cybersoul",

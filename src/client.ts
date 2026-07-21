@@ -56,8 +56,21 @@ import { CyberSoulApi } from "./api/cyberSoulApi.js";
 import { ContextManager } from "./agent/contextManager.js";
 import { EventStream } from "./agent/eventStream.js";
 import { AgentHarness } from "./agent/agentHarness.js";
-import type { ToolContext } from "./agent/types.js";
+import type { ToolContext, Tool } from "./agent/types.js";
 import { buildStatePatchPayload } from "./tools/stateTools.js";
+import { ToolRegistry } from "./tools/toolRegistry.js";
+import {
+  buildGenerateImageTool,
+  buildGenerateVoiceTool,
+  buildGiftOutfitTool,
+  buildTriggerEventTool,
+  buildUpdateStateTool,
+  speakTool,
+  likePictureTool,
+  endTurnTool,
+  skipTurnTool,
+  skipProactiveTool,
+} from "./tools/index.js";
 
 /**
  * CyberSoulClient — the public facade.
@@ -160,6 +173,59 @@ export class CyberSoulClient {
       onOutfitGifted: params.onOutfitGifted,
     });
     return sink;
+  }
+
+  /**
+   * Phase 2 dispatch-path selector. Returns true when the caller has
+   * explicitly opted into native tool-calling via
+   * `llmConfig.capabilities.toolCalling === true`. Default is false —
+   * the Phase 1 JSON-dispatcher path — so existing consumers are
+   * unchanged (§5.3 zero-diff for the default path).
+   *
+   * This is intentionally a strict `=== true` check, not truthy: a
+   * caller who sets `toolCalling: false` is explicitly pinning to the
+   * JSON-dispatcher path (useful for A/B comparison during shadow
+   * mode rollout per §5.5), and that must not be overridden by any
+   * future auto-detection logic.
+   *
+   * Auto-detection from the backend template
+   * (`listSupportedLLMs` projecting `toolCallsResponsePath` presence)
+   * is a planned Phase 2.1 follow-up; for now the flag is explicit.
+   */
+  private shouldUseToolCalling(): boolean {
+    return this.config.llmConfig.capabilities?.toolCalling === true;
+  }
+
+  /**
+   * Phase 2 — build a per-turn ToolRegistry with every capability the
+   * character may invoke. Tools that emit events (image/voice/gift)
+   * close over the per-turn EventStream; signal tools
+   * (speak/like/end_turn/skip_*) are stateless placeholders whose
+   * declarations still ship to the LLM so the model can choose them.
+   *
+   * Built per-turn (not cached on the client) because the sink is
+   * per-turn and the tools close over it. This is cheap — tool
+   * construction is just object assembly, no IO.
+   *
+   * The `as Tool[]` erasure is necessary because each concrete tool
+   * has a narrower `TArgs` than the registry's default — TypeScript's
+   * function-parameter invariance prevents the direct assignment. The
+   * registry never invokes the executor with the wrong shape (callers
+   * that build the tool also build the args that go with it).
+   */
+  private buildTurnToolRegistry(sink: EventStream): ToolRegistry {
+    return new ToolRegistry([
+      speakTool,
+      buildUpdateStateTool(),
+      buildGenerateImageTool(sink),
+      buildGenerateVoiceTool(sink),
+      buildTriggerEventTool(),
+      buildGiftOutfitTool(sink),
+      likePictureTool,
+      endTurnTool,
+      skipTurnTool,
+      skipProactiveTool,
+    ] as unknown as Tool[]);
   }
 
   /* ============================================================ */
@@ -382,10 +448,27 @@ export class CyberSoulClient {
       const sink = this.newSink(params);
       const harness = new AgentHarness(this.llm, sink);
 
-      // 4. Dispatcher LLM call (with the legacy 3-attempt retry loop).
-      const { parsedIntent } = await harness.runInteractDispatch(
-        promptMessages,
-      );
+      // 4. Dispatcher LLM call. Phase 2 adds an alternative native
+      //    tool-calling dispatch path — selected when the caller
+      //    explicitly opts in via `llmConfig.capabilities.toolCalling`.
+      //    Default is the Phase 1 JSON-dispatcher path (zero-diff for
+      //    existing consumers). See
+      //    cybersoul-service/doc/cybersoul-client-agent-harness-tech-approach.md
+      //    §4 Phase 2 + §5.3 (feature-flagged, default off).
+      const useToolCalling = this.shouldUseToolCalling();
+      let parsedIntent: DispatcherIntent;
+      if (useToolCalling) {
+        const registry = this.buildTurnToolRegistry(sink);
+        const declarations = registry.buildToolDeclarations();
+        ({ parsedIntent } = await harness.runInteractDispatchWithTools(
+          promptMessages,
+          declarations,
+        ));
+      } else {
+        ({ parsedIntent } = await harness.runInteractDispatch(
+          promptMessages,
+        ));
+      }
 
       // 5. Reactive skip — short-circuit BEFORE any media / state work.
       if (params.allowSkip && parsedIntent.shouldSkipInteract) {
@@ -588,8 +671,16 @@ export class CyberSoulClient {
       const harness = new AgentHarness(this.llm, sink);
 
       // 5. LLM decides. Lower temperature than `interact` because this
-      //    is a judgment call, not creative reply.
-      const decision = await harness.runProactiveDispatch(promptMessages);
+      //    is a judgment call, not creative reply. Phase 2 routes to
+      //    the native tool-calling path when opted in (same gate as
+      //    interact — see step 4 there).
+      const useToolCalling = this.shouldUseToolCalling();
+      const decision = useToolCalling
+        ? await harness.runProactiveDispatchWithTools(
+            promptMessages,
+            this.buildTurnToolRegistry(sink).buildToolDeclarations(),
+          )
+        : await harness.runProactiveDispatch(promptMessages);
       if (decision.kind === "skip") {
         return { status: "skipped", reason: decision.reason };
       }

@@ -56,6 +56,7 @@ import {
   buildGiftOutfitTool,
   buildTriggerEventTool,
   buildUpdateStateTool,
+  toolCallsToIntent,
 } from "../tools/index.js";
 import type {
   GenerateImageResult,
@@ -160,6 +161,128 @@ export class AgentHarness {
       );
     }
     return { parsedIntent };
+  }
+
+  /* ============================================================ */
+  /* Phase 2 — native tool-calling dispatch path                  */
+  /* ============================================================ */
+
+  /**
+   * Phase 2 native tool-calling dispatcher (see
+   * cybersoul-service/doc/cybersoul-client-agent-harness-tech-approach.md
+   * §3.3.1 + §4 Phase 2). Replaces the JSON-schema-in-prompt +
+   * robustJsonParse + retry loop with a single `provider.chat()` call
+   * that passes the tool declarations natively.
+   *
+   * Why no retry loop? With constrained decoding (§3.3.1), the
+   * provider guarantees the returned `tool_calls[i].arguments` is
+   * valid JSON conforming to the declared schema. The malformed-JSON
+   * failure class that `dispatchInteractWithRetry` exists to handle
+   * is structurally impossible here.
+   *
+   * Returns the SAME `DispatchResult` shape as `runInteractDispatch`
+   * — `toolCallsToIntent` folds the structured tool calls into a
+   * `DispatcherIntent`, so every downstream consumer
+   * (`runInteractSideEffects`, `startInteractStateUpdate`,
+   * `client.ts` response assembly) is byte-for-byte identical between
+   * the two paths. This is what makes the Phase 2 swap a single
+   * routing decision in client.ts.
+   *
+   * Capability contract: callers MUST pre-check
+   * `supportsToolCalling(this.llm)` before invoking this method. If
+   * the provider doesn't implement `chat()`, calling this would throw
+   * at the `this.llm.chat(...)` line — the harness deliberately does
+   * NOT add a defensive fallback here, because silently degrading to
+   * the JSON-dispatcher would hide a misconfiguration.
+   *
+   * @param promptMessages Same {system, user} pair as
+   *   `runInteractDispatch`. NOTE: the system prompt passed here
+   *   SHOULD NOT embed the JSON schema — the prompt-builder variant
+   *   for the tool-calling path is a separate concern (Phase 1.5 /
+   *   Phase 2 follow-up). For Phase 2 as shipped, the same prompt is
+   *   used and the model receives both the embedded schema AND the
+   *   native tool declarations; the native declarations win because
+   *   the provider's constrained-decoding mask takes priority over
+   *   prose instructions. This is acceptable for the shadow-mode
+   *   rollout (§5.5) and a follow-up cleans up the prompt.
+   * @param toolDeclarations The `LLMToolDeclaration[]` built from the
+   *   ToolRegistry.
+   */
+  async runInteractDispatchWithTools(
+    promptMessages: Array<{ role: string; content: string }>,
+    toolDeclarations: import("../types.js").LLMToolDeclaration[],
+  ): Promise<DispatchResult> {
+    const result = await this.llm.chat!({
+      messages: promptMessages,
+      tools: toolDeclarations,
+      maxTokens: 15000,
+      temperature: 0.7,
+    });
+
+    // Fold the structured tool calls into the same DispatcherIntent
+    // shape the JSON-dispatcher path produces. Downstream is identical.
+    const parsedIntent = toolCallsToIntent(result.toolCalls);
+
+    // The model may emit text alongside tool calls (or as a pure-text
+    // reply with no tool calls). Preserve either.
+    if (
+      typeof result.textResponse === "string" &&
+      result.textResponse.trim().length > 0
+    ) {
+      parsedIntent.textResponse = result.textResponse;
+    }
+
+    return { parsedIntent };
+  }
+
+  /**
+   * Phase 2 native tool-calling proactive dispatcher. Mirrors
+   * `runProactiveDispatch`'s return shape so the proactive gating in
+   * client.ts stays untouched.
+   *
+   * Same capability contract as `runInteractDispatchWithTools`:
+   * pre-check `supportsToolCalling(this.llm)`.
+   */
+  async runProactiveDispatchWithTools(
+    promptMessages: Array<{ role: string; content: string }>,
+    toolDeclarations: import("../types.js").LLMToolDeclaration[],
+  ): Promise<
+    | { kind: "skip"; reason: string }
+    | { kind: "proceed"; intent: DispatcherIntent }
+  > {
+    const result = await this.llm.chat!({
+      messages: promptMessages,
+      tools: toolDeclarations,
+      maxTokens: 800,
+      temperature: 0.5,
+    });
+
+    const parsedIntent = toolCallsToIntent(result.toolCalls);
+    if (
+      typeof result.textResponse === "string" &&
+      result.textResponse.trim().length > 0
+    ) {
+      parsedIntent.textResponse = result.textResponse;
+    }
+
+    if (parsedIntent.shouldSkipProactive) {
+      return {
+        kind: "skip",
+        reason: parsedIntent.skipReason || "Character chose not to reach out.",
+      };
+    }
+
+    if (
+      typeof parsedIntent.textResponse !== "string" ||
+      parsedIntent.textResponse.trim().length === 0
+    ) {
+      return {
+        kind: "skip",
+        reason: "LLM produced no textResponse (treated as implicit skip).",
+      };
+    }
+
+    return { kind: "proceed", intent: parsedIntent };
   }
 
   /**

@@ -1,4 +1,4 @@
-import { BaseLLMProvider, GenericLLMConfig } from './types.js';
+import { BaseLLMProvider, GenericLLMConfig, LLMToolCall, LLMChatResult, LLMToolDeclaration } from './types.js';
 import {
   CyberSoulLlmApiError,
   CyberSoulLlmAuthError,
@@ -127,6 +127,124 @@ export class GenericLLMProvider implements BaseLLMProvider {
     return cursor;
   }
 
+  /**
+   * Resolve a dotted path against a nested object, returning whatever
+   * value lives there (or `undefined`). Used for both the text-response
+   * path and the tool-calls response path. Unlike `extractResponse`,
+   * this variant does NOT throw — it returns undefined so the chat()
+   * path can decide whether missing tool_calls is an error or just
+   * "the model chose not to call any tools."
+   */
+  private resolvePath(data: any, path: string): unknown {
+    if (!path) return undefined;
+    const parts = path.split('.');
+    let cursor: any = data;
+    for (const part of parts) {
+      if (cursor === undefined || cursor === null) return undefined;
+      cursor = cursor[part];
+    }
+    return cursor;
+  }
+
+  /**
+   * Phase 2 capability detection. A template supports tool-calling iff
+   * all three tool-related fields are present and non-empty. Their
+   * absence means "this provider/model's template was not configured
+   * for tool-calling" and the SDK falls back to the JSON-dispatcher
+   * path. Public (exported via the type) so the harness can pre-check
+   * before even fetching the template.
+   */
+  templateSupportsToolCalling(template: any): boolean {
+    return !!(
+      template &&
+      template.toolsPayloadTemplate &&
+      typeof template.toolsPayloadTemplate === 'object' &&
+      template.toolCallsResponsePath &&
+      typeof template.toolCallsResponsePath === 'string' &&
+      template.toolCallArgsResponsePath &&
+      typeof template.toolCallArgsResponsePath === 'string'
+    );
+  }
+
+  /**
+   * Parse tool calls from the raw LLM response. Handles two shapes
+   * transparently based on the configured response path:
+   *
+   *   1. OpenAI/MiniMax shape — `toolCallsResponsePath` points at an
+   *      array of `{ id, type: "function", function: { name, arguments } }`.
+   *      Each item's args live at `function.{toolCallArgsResponsePath}`.
+   *
+   *   2. Anthropic native shape — `toolCallsResponsePath` points at a
+   *      `content` array containing `{ type: "tool_use", name, input }`
+   *      items. Each item's args live at `{toolCallArgsResponsePath}`
+   *      (typically `"input"`).
+   *
+   * Items that don't resolve to a recognizable shape are skipped — the
+   * model sometimes interleaves text blocks with tool_use blocks, and
+   * only the tool_use entries are tool calls.
+   */
+  private extractToolCalls(
+    data: any,
+    toolCallsResponsePath: string,
+    toolCallArgsResponsePath: string,
+  ): LLMToolCall[] {
+    const raw = this.resolvePath(data, toolCallsResponsePath);
+    if (!Array.isArray(raw)) return [];
+
+    const argsParts = toolCallArgsResponsePath.split('.');
+    const calls: LLMToolCall[] = [];
+
+    for (const item of raw) {
+      if (!item || typeof item !== 'object') continue;
+
+      // OpenAI/MiniMax shape: { function: { name, arguments } }
+      // Anthropic shape: { type: "tool_use", name, input }
+      let name: string | undefined;
+      let args: unknown;
+
+      if (typeof item.function === 'object' && item.function !== null) {
+        // OpenAI/MiniMax
+        name = typeof item.function.name === 'string' ? item.function.name : undefined;
+        // Walk the args path from the `function` object so `function.arguments`
+        // works as well as `function.input`.
+        let cursor: any = item.function;
+        for (const part of argsParts) {
+          if (part === 'function') continue; // tolerate paths like "function.arguments"
+          if (cursor === undefined || cursor === null) break;
+          cursor = cursor[part];
+        }
+        args = cursor;
+      } else if (item.type === 'tool_use' || (typeof item.name === 'string' && item.input !== undefined)) {
+        // Anthropic native
+        name = typeof item.name === 'string' ? item.name : undefined;
+        let cursor: any = item;
+        for (const part of argsParts) {
+          if (cursor === undefined || cursor === null) break;
+          cursor = cursor[part];
+        }
+        args = cursor;
+      }
+
+      if (!name) continue;
+
+      // The provider returns args either as a JSON string (OpenAI/MiniMax)
+      // or as a parsed object (Anthropic). Normalize to string for the
+      // LLMToolCall contract.
+      let argsStr: string;
+      if (typeof args === 'string') {
+        argsStr = args;
+      } else if (args !== undefined && args !== null) {
+        argsStr = JSON.stringify(args);
+      } else {
+        argsStr = '{}';
+      }
+
+      calls.push({ name, arguments: argsStr });
+    }
+
+    return calls;
+  }
+
   async generate(messages: { role: string; content: string }[], maxTokens: number = 1500, temperature: number = 0.7): Promise<string> {
     const template = await this.fetchTemplate();
 
@@ -251,5 +369,178 @@ export class GenericLLMProvider implements BaseLLMProvider {
         },
       );
     }
+  }
+
+  /**
+   * Phase 2 native tool-calling entry point (see
+   * cybersoul-service/doc/cybersoul-client-agent-harness-tech-approach.md
+   * §3.3.1). Mirrors `generate()` for transport + error handling, then
+   * ALSO injects the tool declarations into the request payload (via
+   * the template's `toolsPayloadTemplate`) and parses `tool_calls`
+   * back out of the response.
+   *
+   * The constrained-decoding enforcement (§3.3.1) is provider-side —
+   * by the time the response arrives here, `tool_calls[i].arguments`
+   * is guaranteed to be valid JSON conforming to the declared schema.
+   * `JSON.parse()` cannot fail on it.
+   *
+   * Throws `CyberSoulLlmBadResponseError` when the template was not
+   * configured for tool-calling — the harness MUST pre-check with
+   * `templateSupportsToolCalling()` and not call `chat()` on a
+   * template that doesn't support it. This is a defensive throw so
+   * misconfiguration fails loudly instead of silently degrading.
+   */
+  async chat(params: {
+    messages: { role: string; content: string }[];
+    tools: LLMToolDeclaration[];
+    maxTokens?: number;
+    temperature?: number;
+  }): Promise<LLMChatResult> {
+    const template = await this.fetchTemplate();
+    if (!this.templateSupportsToolCalling(template)) {
+      throw new CyberSoulLlmBadResponseError(
+        this.config.provider,
+        this.config.model,
+        `chat() called on a template that does not support tool-calling. Configure toolsPayloadTemplate + toolCallsResponsePath + toolCallArgsResponsePath on the backend LlmModel, or call generate() instead.`,
+      );
+    }
+
+    const headers = { ...template.headersTemplate };
+    if (this.config.apiKey) {
+      for (const key of Object.keys(headers)) {
+        if (typeof headers[key] === 'string') {
+          headers[key] = headers[key].replace('{{apiKey}}', this.config.apiKey);
+        }
+      }
+    }
+
+    const payload = { ...template.basePayload };
+    if (this.config.customSettings) {
+      Object.assign(payload, this.config.customSettings);
+    }
+    if (!payload.messages || (Array.isArray(payload.messages) && payload.messages.length === 0)) {
+      payload.messages = params.messages;
+    }
+
+    // Inject the tool declarations per the template's instructions.
+    // The template author chooses how tools appear in the provider's
+    // request format — `{{tools}}` is the placeholder. Some providers
+    // want the tools inline; some want them JSON-stringified. The
+    // template's `toolsPayloadTemplate` object is merged onto the
+    // payload with the placeholder resolved.
+    const toolsTemplate = template.toolsPayloadTemplate as Record<string, unknown>;
+    for (const [key, value] of Object.entries(toolsTemplate)) {
+      if (typeof value === 'string' && value.includes('{{tools}}')) {
+        // Replace the placeholder inline (preserves any wrapper structure
+        // the template specified around `{{tools}}`).
+        payload[key] = value.replace('{{tools}}', JSON.stringify(params.tools));
+      } else if (value === '{{tools}}') {
+        // Bare placeholder — inject the array directly so the provider
+        // receives it as a real JSON array, not a stringified one.
+        payload[key] = params.tools;
+      } else {
+        // Static value the template wants shipped verbatim (e.g.
+        // `tool_choice: { type: "auto" }`). Copy through.
+        payload[key] = value;
+      }
+    }
+
+    const apiUrl: string = template.apiUrl;
+    let response: Response;
+    try {
+      response = await this.fetchFn(apiUrl, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(payload),
+      });
+    } catch (err) {
+      throw wrapLlmFetchError(err, apiUrl, 'POST');
+    }
+
+    if (!response.ok) {
+      // Same error mapping as generate(). Re-implemented rather than
+      // refactored into a shared helper so the stack trace points at
+      // chat() for diagnosis — the failure modes are identical but
+      // the call origin matters in logs.
+      let body: unknown;
+      try { body = await response.json(); } catch { body = undefined; }
+      const providerMsg =
+        body && typeof body === 'object' && 'error' in body
+          ? String((body as { error: unknown }).error)
+          : body && typeof body === 'object' && 'message' in body
+            ? String((body as { message: unknown }).message)
+            : `HTTP ${response.status}`;
+
+      if (response.status === 401 || response.status === 403) {
+        throw new CyberSoulLlmAuthError(
+          this.config.provider,
+          this.config.model,
+          response.status,
+          apiUrl,
+          `LLM provider rejected credentials (${providerMsg}). Check the API key configured for ${this.config.provider}/${this.config.model}.`,
+          body,
+        );
+      }
+      if (response.status === 429) {
+        throw new CyberSoulLlmRateLimitError(
+          this.config.provider,
+          this.config.model,
+          response.status,
+          apiUrl,
+          `LLM provider rate-limited the request (${providerMsg}). Retry after a short delay.`,
+          body,
+        );
+      }
+      if (response.status >= 500) {
+        throw new CyberSoulLlmUnavailableError(
+          this.config.provider,
+          this.config.model,
+          response.status,
+          apiUrl,
+          `LLM provider is unavailable (${providerMsg}). Retry later.`,
+          body,
+        );
+      }
+      throw new CyberSoulLlmApiError(
+        this.config.provider,
+        this.config.model,
+        response.status,
+        apiUrl,
+        `LLM provider returned HTTP ${response.status}: ${providerMsg}`,
+        body,
+      );
+    }
+
+    let data: any;
+    try {
+      data = await response.json() as any;
+    } catch (err) {
+      throw new CyberSoulLlmBadResponseError(
+        this.config.provider,
+        this.config.model,
+        `LLM provider returned a non-JSON body: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    // Text portion may be absent on a pure tool-call turn (OpenAI returns
+    // null content). Tolerate that — an empty string is the contract.
+    let textResponse = '';
+    try {
+      textResponse = this.extractResponse(
+        data,
+        template.responsePath || 'choices.0.message.content',
+      );
+    } catch {
+      // Missing/null text on a tool-call turn is legitimate. Leave
+      // textResponse as empty string.
+    }
+
+    const toolCalls = this.extractToolCalls(
+      data,
+      template.toolCallsResponsePath,
+      template.toolCallArgsResponsePath,
+    );
+
+    return { textResponse, toolCalls };
   }
 }

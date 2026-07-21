@@ -43,3 +43,5 @@ export type {
   SkipTurnResult,
   SkipProactiveResult,
 } from "./signalTools.js";
+
+export { toolCallsToIntent } from "./toolCallsToIntent.js";

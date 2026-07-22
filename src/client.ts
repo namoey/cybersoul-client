@@ -18,6 +18,7 @@ import {
   PersistedDynamicContext,
   SupportedLLMModel,
 } from "./types.js";
+import { supportsStreaming } from "./types.js";
 import { robustJsonParse } from "./utils/json.utils.js";
 import { GenericLLMProvider } from "./llm.provider.js";
 import { CyberSoulError } from "./errors.js";
@@ -292,6 +293,7 @@ export class CyberSoulClient {
    */
   private newSink(params: {
     onTextReady?: InteractParams["onTextReady"];
+    onTextDelta?: InteractParams["onTextDelta"];
     onStateReady?: InteractParams["onStateReady"];
     onMediaReady?: InteractParams["onMediaReady"];
     onOutfitGifted?: InteractParams["onOutfitGifted"];
@@ -299,6 +301,7 @@ export class CyberSoulClient {
     const sink = new EventStream();
     sink.attachLegacy({
       onTextReady: params.onTextReady,
+      onTextDelta: params.onTextDelta,
       onStateReady: params.onStateReady,
       onMediaReady: params.onMediaReady,
       onOutfitGifted: params.onOutfitGifted,
@@ -325,6 +328,27 @@ export class CyberSoulClient {
    */
   private shouldUseToolCalling(): boolean {
     return this.config.llmConfig.capabilities?.toolCalling === true;
+  }
+
+  /**
+   * Phase 4 — streaming selector. Returns true when the caller has
+   * explicitly opted into streaming via `llmConfig.capabilities.
+   * streaming === true` AND the provider implements `chatStream()`.
+   * Default is false — the non-streaming dispatch path.
+   *
+   * Streaming takes PRIORITY over tool-calling in the dispatch
+   * selection: streaming + tool-calling both use provider.chat()
+   * under the hood, but streaming's value (text deltas for perceived
+   * latency) is higher-impact than tool-calling's value (eliminating
+   * malformed JSON). When both are on, streaming wins and tool-
+   * calling's benefits are deferred until the streaming + tool-call
+   * path is built (Phase 4.1).
+   */
+  private shouldUseStreaming(): boolean {
+    return (
+      this.config.llmConfig.capabilities?.streaming === true &&
+      supportsStreaming(this.llm)
+    );
   }
 
   /**
@@ -591,24 +615,36 @@ export class CyberSoulClient {
       const sink = this.newSink(params);
       const harness = new AgentHarness(this.llm, sink);
 
-      // 4. Dispatcher LLM call. Phase 2 adds an alternative native
-      //    tool-calling dispatch path — selected when the caller
-      //    explicitly opts in via `llmConfig.capabilities.toolCalling`.
-      //    Default is the Phase 1 JSON-dispatcher path (zero-diff for
-      //    existing consumers). See
-      //    cybersoul-service/doc/cybersoul-client-agent-harness-tech-approach.md
-      //    §4 Phase 2 + §5.3 (feature-flagged, default off).
+      // 4. Dispatcher LLM call. Three dispatch paths, in priority order:
+      //    a) Phase 4 streaming — when capabilities.streaming === true
+      //       AND provider implements chatStream(). Text arrives as
+      //       deltas via text-delta events.
+      //    b) Phase 2 tool-calling — when capabilities.toolCalling ===
+      //       true. Single-shot OR multi-step loop (Phase 3.3) when
+      //       agentLoop is set.
+      //    c) Phase 1 JSON-dispatcher — the default, zero-diff for
+      //       existing consumers.
+      //    See §4 + §5.3 (feature-flagged, default off).
+      const useStreaming = this.shouldUseStreaming();
       const useToolCalling = this.shouldUseToolCalling();
       const loopConfig = this.resolveAgentLoopConfig(params.agentLoop);
       let parsedIntent: DispatcherIntent;
-      if (useToolCalling) {
+      if (useStreaming) {
+        // Phase 4 — streaming text deltas. Tool declarations are
+        // passed but today's streaming path doesn't use the loop;
+        // Phase 4.1 will combine streaming + multi-step.
+        const registry = this.buildTurnToolRegistry(sink, params.extraTools);
+        const declarations = registry.buildToolDeclarations();
+        ({ parsedIntent } = await harness.runInteractDispatchStream(
+          promptMessages,
+          declarations,
+        ));
+      } else if (useToolCalling) {
         const registry = this.buildTurnToolRegistry(sink, params.extraTools);
         const declarations = registry.buildToolDeclarations();
         const toolCtx = this.buildToolContext(ctx.state, params);
         if (loopConfig) {
-          // Phase 3.3 — multi-step agent loop. Iterates until no tool
-          // calls or a safety cap fires. Same DispatchResult shape
-          // downstream.
+          // Phase 3.3 — multi-step agent loop.
           ({ parsedIntent } = await harness.runInteractDispatchLoop(
             promptMessages,
             declarations,

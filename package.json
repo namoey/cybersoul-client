@@ -18,7 +18,7 @@
     "build": "node scripts/generate-version.mjs && tsc",
     "prepare": "npm run build",
     "version": "node scripts/generate-version.mjs && git add src/version.ts",
-    "test": "npm run build && node dist/utils/json.utils.test.js && node dist/agent/contextManager.test.js && node dist/agent/eventStream.test.js && node dist/tools/stateTools.test.js && node dist/tools/toolCallsToIntent.test.js && node dist/agent/phase2-errors.test.js && node dist/agent/asyncEventQueue.test.js && node dist/agent/cyberSoulAgent.test.js && node dist/agent/historyCompactor.test.js && node dist/agent/phase3-1.test.js && node dist/agent/phase3-2.test.js && node dist/agent/phase3-3.test.js"
+    "test": "npm run build && node dist/utils/json.utils.test.js && node dist/agent/contextManager.test.js && node dist/agent/eventStream.test.js && node dist/tools/stateTools.test.js && node dist/tools/toolCallsToIntent.test.js && node dist/agent/phase2-errors.test.js && node dist/agent/asyncEventQueue.test.js && node dist/agent/cyberSoulAgent.test.js && node dist/agent/historyCompactor.test.js && node dist/agent/phase3-1.test.js && node dist/agent/phase3-2.test.js && node dist/agent/phase3-3.test.js && node dist/agent/phase4-streaming.test.js"
   },
   "keywords": [
     "cybersoul",

@@ -56,6 +56,8 @@ export type {
   LLMToolCall,
   LLMChatResult,
   LLMConversationMessage,
+  LLMPlainMessage,
+  LLMStreamEvent,
   ModelCustomConfigValueType,
   IModelCustomConfigField,
   IVoiceModel,
@@ -66,6 +68,7 @@ export type {
 
 export { InteractRequestType } from "../types.js";
 export { supportsToolCalling } from "../types.js";
+export { supportsStreaming } from "../types.js";
 
 // Implementation surface that is part of the contract (callers `new` it
 // or `instanceof` against it).

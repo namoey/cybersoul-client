@@ -47,7 +47,7 @@ import type {
   PersistedDynamicContext,
   ProactiveParams,
 } from "../types.js";
-import { InteractRequestType, supportsToolCalling } from "../types.js";
+import { InteractRequestType, supportsToolCalling, supportsStreaming } from "../types.js";
 import type { ToolContext, ToolFailure, AgentLoopConfig, AgentLoopTerminationReason } from "./types.js";
 import type { EventStream } from "./eventStream.js";
 import {
@@ -563,6 +563,98 @@ export class AgentHarness {
         },
       });
     }
+
+    return { parsedIntent };
+  }
+
+  /* ============================================================ */
+  /* Phase 4 — streaming text dispatch                            */
+  /* ============================================================ */
+
+  /**
+   * Phase 4 — streaming text dispatch (see
+   * cybersoul-service/doc/cybersoul-client-agent-harness-tech-approach.md
+   * §4 Phase 4). Uses `provider.chatStream()` to get text deltas as
+   * they arrive, emitting `text-delta` events through the sink so
+   * `CyberSoulAgent` consumers see the "typing" effect in real time.
+   *
+   * Returns the SAME `DispatchResult` shape as the non-streaming
+   * dispatchers — downstream (`runInteractSideEffects`, etc.) is
+   * identical. Only the delivery timing of text changes: deltas
+   * stream as they arrive, then the full text is in the returned
+   * `parsedIntent.textResponse`.
+   *
+   * Capability contract: pre-check `supportsStreaming(this.llm)`.
+   *
+   * @param promptMessages Same {system, user} pair as other dispatchers.
+   * @param toolDeclarations For tool-calling providers; pass [] if N/A.
+   */
+  async runInteractDispatchStream(
+    promptMessages: Array<{ role: string; content: string }>,
+    toolDeclarations: import("../types.js").LLMToolDeclaration[],
+  ): Promise<DispatchResult> {
+    if (!supportsStreaming(this.llm)) {
+      throw new CyberSoulError(
+        "llm-capability-mismatch",
+        "Streaming dispatch path selected (llmConfig.capabilities.streaming === true) but the LLM provider does not implement chatStream(). Either implement chatStream() on the provider, or unset capabilities.streaming.",
+      );
+    }
+
+    let fullText = "";
+    const allToolCalls: import("../types.js").LLMToolCall[] = [];
+
+    try {
+      for await (const ev of this.llm.chatStream!({
+        messages: promptMessages,
+        tools: toolDeclarations,
+        maxTokens: 15000,
+        temperature: 0.7,
+      })) {
+        switch (ev.type) {
+          case "text-delta":
+            // Stream the delta to consumers immediately. This is the
+            // whole point of Phase 4 — perceived latency drops from
+            // ~5s to ~300ms.
+            this.sink.emit({ type: "text-delta", delta: ev.delta });
+            fullText += ev.delta;
+            break;
+          case "tool-call":
+            if (ev.toolCall) allToolCalls.push(ev.toolCall);
+            break;
+          case "message-complete":
+            // Provider's final assembled text may be more accurate
+            // (e.g. if some deltas were dropped). Prefer it.
+            if (ev.textResponse) fullText = ev.textResponse;
+            if (ev.toolCalls) {
+              allToolCalls.length = 0;
+              allToolCalls.push(...ev.toolCalls);
+            }
+            break;
+          case "tool-call-delta":
+            // Ignore — we wait for the complete tool-call event.
+            break;
+          case "error":
+            console.warn(
+              "[CyberSoulClient] LLM stream warning:",
+              ev.error,
+            );
+            break;
+        }
+      }
+    } catch (e) {
+      // Stream errored mid-flight. If we got partial text, keep it
+      // (better than losing the turn entirely). Re-throw so the
+      // client's outer catch surfaces the typed error.
+      if (fullText.length === 0) throw e;
+      console.warn(
+        "[CyberSoulClient] LLM stream errored mid-flight; using partial text:",
+        e,
+      );
+    }
+
+    // Fold accumulated tool calls into the intent.
+    const parsedIntent = toolCallsToIntent(allToolCalls);
+    if (fullText) parsedIntent.textResponse = fullText;
 
     return { parsedIntent };
   }

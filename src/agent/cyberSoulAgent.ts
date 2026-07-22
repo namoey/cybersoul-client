@@ -140,6 +140,10 @@ export class CyberSoulAgent {
       // built-in toolset. Caller's per-turn extraTools (if any) wins
       // over the constructor-level persona tools.
       extraTools: this.resolveExtraTools(params.extraTools),
+      // Phase 4 — forward streaming text deltas as text-delta events.
+      onTextDelta: (delta) => {
+        queue.push({ type: "text-delta", delta });
+      },
       onTextReady: (text, actionText, metadata) => {
         queue.push({
           type: "text-ready",
@@ -211,6 +215,9 @@ export class CyberSoulAgent {
         params.systemPromptFragment,
       ),
       extraTools: this.resolveExtraTools(params.extraTools),
+      onTextDelta: (delta) => {
+        queue.push({ type: "text-delta", delta });
+      },
       onTextReady: (text, actionText, metadata) => {
         queue.push({
           type: "text-ready",

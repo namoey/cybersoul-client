@@ -1,4 +1,4 @@
-import { BaseLLMProvider, GenericLLMConfig, LLMToolCall, LLMChatResult, LLMToolDeclaration, LLMConversationMessage } from './types.js';
+import { BaseLLMProvider, GenericLLMConfig, LLMToolCall, LLMChatResult, LLMToolDeclaration, LLMConversationMessage, LLMPlainMessage, LLMStreamEvent } from './types.js';
 import {
   CyberSoulLlmApiError,
   CyberSoulLlmAuthError,
@@ -598,5 +598,258 @@ export class GenericLLMProvider implements BaseLLMProvider {
     );
 
     return { textResponse, toolCalls };
+  }
+
+  /**
+   * Phase 4 streaming variant of `chat()` (see
+   * cybersoul-service/doc/cybersoul-client-agent-harness-tech-approach.md
+   * §4 Phase 4). When the backend template declares `streamMode: "sse"`,
+   * this method sets `stream: true` on the request and parses the
+   * Server-Sent Events response body into an `AsyncIterable<
+   * LLMStreamEvent>`.
+   *
+   * Streaming delivers text as deltas — the biggest perceived-latency
+   * win for companion UX (first token in ~300ms vs ~3-8s today).
+   *
+   * SSE format (OpenAI-compatible, also used by MiniMax):
+   *   Each chunk is `data: {json}\n\n`. The final chunk is `data:
+   *   [DONE]\n\n`. The JSON's text delta lives at `template.
+   *   streamDeltaPath` (typically `choices.0.delta.content`).
+   *
+   * Tool calls in streaming mode: most providers emit tool-call
+   * arguments as fragments across multiple chunks. This implementation
+   * buffers them and emits a single `tool-call` event when the call
+   * completes (when the model finishes the tool-call turn).
+   *
+   * Capability contract: callers MUST pre-check
+   * `templateStreamSupported(template)` AND
+   * `supportsStreaming(provider)`. Throws
+   * `CyberSoulLlmBadResponseError` if the template isn't configured
+   * for streaming.
+   */
+  async *chatStream(params: {
+    messages: Array<LLMConversationMessage | LLMPlainMessage>;
+    tools: LLMToolDeclaration[];
+    maxTokens?: number;
+    temperature?: number;
+  }): AsyncGenerator<LLMStreamEvent> {
+    const template = await this.fetchTemplate();
+    if (!this.templateStreamSupported(template)) {
+      throw new CyberSoulLlmBadResponseError(
+        this.config.provider,
+        this.config.model,
+        `chatStream() called on a template that does not support streaming. Configure streamMode: "sse" + streamDeltaPath on the backend LlmModel, or call chat() instead.`,
+      );
+    }
+
+    const headers = { ...template.headersTemplate };
+    if (this.config.apiKey) {
+      for (const key of Object.keys(headers)) {
+        if (typeof headers[key] === 'string') {
+          headers[key] = headers[key].replace('{{apiKey}}', this.config.apiKey);
+        }
+      }
+    }
+    // SSE requires Accept header
+    (headers as Record<string, string>)['Accept'] = 'text/event-stream';
+
+    const payload: Record<string, unknown> = { ...template.basePayload };
+    if (this.config.customSettings) {
+      Object.assign(payload, this.config.customSettings);
+    }
+    if (!payload.messages || (Array.isArray(payload.messages) && payload.messages.length === 0)) {
+      payload.messages = normalizeMessagesForProvider(params.messages);
+    }
+    // Inject tools (same as chat()).
+    if (template.toolsPayloadTemplate) {
+      const toolsTemplate = template.toolsPayloadTemplate as Record<string, unknown>;
+      for (const [key, value] of Object.entries(toolsTemplate)) {
+        if (typeof value === 'string' && value.includes('{{tools}}')) {
+          payload[key] = value.replace('{{tools}}', JSON.stringify(params.tools));
+        } else if (value === '{{tools}}') {
+          payload[key] = params.tools;
+        } else {
+          payload[key] = value;
+        }
+      }
+    }
+    // Enable streaming.
+    payload.stream = true;
+
+    const apiUrl: string = template.apiUrl;
+    let response: Response;
+    try {
+      response = await this.fetchFn(apiUrl, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(payload),
+      });
+    } catch (err) {
+      throw wrapLlmFetchError(err, apiUrl, 'POST');
+    }
+
+    if (!response.ok) {
+      let body: unknown;
+      try { body = await response.json(); } catch { body = undefined; }
+      const providerMsg =
+        body && typeof body === 'object' && 'error' in body
+          ? String((body as { error: unknown }).error)
+          : `HTTP ${response.status}`;
+      if (response.status === 401 || response.status === 403) {
+        throw new CyberSoulLlmAuthError(
+          this.config.provider,
+          this.config.model,
+          response.status,
+          apiUrl,
+          `LLM provider rejected credentials (${providerMsg}).`,
+          body,
+        );
+      }
+      throw new CyberSoulLlmApiError(
+        this.config.provider,
+        this.config.model,
+        response.status,
+        apiUrl,
+        `LLM provider returned HTTP ${response.status}: ${providerMsg}`,
+        body,
+      );
+    }
+
+    // Parse the SSE stream.
+    const body = response.body;
+    if (!body) {
+      throw new CyberSoulLlmBadResponseError(
+        this.config.provider,
+        this.config.model,
+        'Streaming response had no body — provider may not actually support SSE despite the template config.',
+      );
+    }
+
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let fullText = '';
+    const toolCallBuffers = new Map<number, { id?: string; name?: string; arguments: string }>();
+    const deltaPath = template.streamDeltaPath || 'choices.0.delta.content';
+    const deltaPathParts = deltaPath.split('.');
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        // SSE events are separated by `\n\n`. Process complete events.
+        let sepIdx: number;
+        while ((sepIdx = buffer.indexOf('\n\n')) >= 0) {
+          const eventBlock = buffer.slice(0, sepIdx);
+          buffer = buffer.slice(sepIdx + 2);
+
+          // Each event may have multiple `data:` lines. Concatenate them.
+          const dataLines = eventBlock
+            .split('\n')
+            .filter((l) => l.startsWith('data:'))
+            .map((l) => l.slice(5).trim());
+          if (dataLines.length === 0) continue;
+          const dataStr = dataLines.join('');
+
+          // [DONE] marker = stream end.
+          if (dataStr === '[DONE]') {
+            // Emit accumulated tool calls.
+            for (const [, buf] of toolCallBuffers) {
+              yield {
+                type: 'tool-call',
+                toolCall: {
+                  id: buf.id,
+                  name: buf.name ?? '',
+                  arguments: buf.arguments || '{}',
+                },
+              };
+            }
+            yield {
+              type: 'message-complete',
+              textResponse: fullText,
+              toolCalls: Array.from(toolCallBuffers.values()).map((buf) => ({
+                id: buf.id,
+                name: buf.name ?? '',
+                arguments: buf.arguments || '{}',
+              })),
+            };
+            return;
+          }
+
+          // Parse the JSON chunk.
+          let chunk: any;
+          try {
+            chunk = JSON.parse(dataStr);
+          } catch {
+            // Skip malformed chunks — SSE streams sometimes emit
+            // partial JSON across reads; the next read will complete it.
+            continue;
+          }
+
+          // Extract text delta.
+          const delta = this.resolvePath(chunk, deltaPath);
+          if (typeof delta === 'string' && delta.length > 0) {
+            fullText += delta;
+            yield { type: 'text-delta', delta };
+          }
+
+          // Accumulate tool-call fragments (OpenAI streaming format:
+          // tool_calls[].function.name + .arguments arrive as deltas).
+          const streamToolCalls = this.resolvePath(chunk, 'choices.0.delta.tool_calls');
+          if (Array.isArray(streamToolCalls)) {
+            for (const frag of streamToolCalls) {
+              const idx = typeof frag.index === 'number' ? frag.index : 0;
+              if (!toolCallBuffers.has(idx)) {
+                toolCallBuffers.set(idx, { id: frag.id, name: '', arguments: '' });
+              }
+              const buf = toolCallBuffers.get(idx)!;
+              if (frag.id) buf.id = frag.id;
+              if (frag.function?.name) buf.name = frag.function.name;
+              if (frag.function?.arguments) buf.arguments += frag.function.arguments;
+            }
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+
+    // Stream ended without [DONE] — emit message-complete with what we have.
+    for (const [, buf] of toolCallBuffers) {
+      yield {
+        type: 'tool-call',
+        toolCall: {
+          id: buf.id,
+          name: buf.name ?? '',
+          arguments: buf.arguments || '{}',
+        },
+      };
+    }
+    yield {
+      type: 'message-complete',
+      textResponse: fullText,
+      toolCalls: Array.from(toolCallBuffers.values()).map((buf) => ({
+        id: buf.id,
+        name: buf.name ?? '',
+        arguments: buf.arguments || '{}',
+      })),
+    };
+  }
+
+  /**
+   * Phase 4 capability detection for the template. Returns true iff
+   * the template declares `streamMode: "sse"` + a non-empty
+   * `streamDeltaPath`. Their absence means "streaming not supported"
+   * and the SDK falls back to the non-streaming chat() path.
+   */
+  templateStreamSupported(template: any): boolean {
+    return !!(
+      template &&
+      template.streamMode === 'sse' &&
+      typeof template.streamDeltaPath === 'string' &&
+      template.streamDeltaPath.length > 0
+    );
   }
 }

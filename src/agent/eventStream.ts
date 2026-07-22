@@ -42,6 +42,8 @@ export interface LegacyCallbacks {
     actionText?: string,
     metadata?: InteractMetadata,
   ) => void;
+  /** Phase 4 — streaming text-delta callback. */
+  onTextDelta?: (delta: string) => void;
   onStateReady?: (persisted: PersistedDynamicContext) => void;
   onMediaReady?: (payload: MediaReadyPayload) => void;
   onOutfitGifted?: (payload: OutfitGiftedPayload) => void;
@@ -131,11 +133,24 @@ export class EventStream implements AgentEventSink {
       }
       // Phase 2+ events — not yet emitted by the harness in Phase 1.
       // They exist in the union so the public EventStream shape is stable.
-      case "text-delta":
+      case "text-delta": {
+        // Phase 4 — forward to the onTextDelta callback when present.
+        if (this.legacy.onTextDelta) {
+          try {
+            this.legacy.onTextDelta(event.delta);
+          } catch (cbErr) {
+            console.warn(
+              "[CyberSoulClient] onTextDelta callback threw:",
+              cbErr,
+            );
+          }
+        }
+        break;
+      }
       case "tool-call":
       case "tool-result":
       case "turn-complete":
-        // No legacy equivalent yet — intentionally no-op in Phase 1.
+        // No legacy equivalent — intentionally no-op for these.
         break;
     }
   }

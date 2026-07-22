@@ -217,6 +217,9 @@ export interface ProactiveParams {
   requestTypes?: InteractRequestType[];
   localContext?: string;
   onTextReady?: (textResponse: string, actionText?: string, metadata?: InteractMetadata) => void;
+  /** Phase 4 — streaming text-delta callback. Same contract as
+   * InteractParams.onTextDelta — see there. */
+  onTextDelta?: (delta: string) => void;
   /**
    * Fires when the server-authoritative PATCH /dynamic-context resolves,
    * before media generation completes. Lets the UI update the live
@@ -330,6 +333,16 @@ export interface InteractParams {
    */
   allowSkip?: boolean;
   onTextReady?: (textResponse: string, actionText?: string, metadata?: InteractMetadata) => void;
+  /**
+   * Phase 4 — fires for each text delta during a streaming turn.
+   * Only fires when `llmConfig.capabilities.streaming === true` AND
+   * the provider implements `chatStream()`. Non-streaming turns
+   * fire `onTextReady` instead. Callers wanting the "typing" effect
+   * subscribe here; `onTextReady` still fires at the end with the
+   * full text so callers that only want the final text don't need
+   * to handle deltas.
+   */
+  onTextDelta?: (delta: string) => void;
   /**
    * Fires when the server-authoritative PATCH /dynamic-context resolves,
    * before media generation completes. Lets the UI update the live
@@ -719,6 +732,43 @@ export interface LLMChatResult {
   toolCalls: LLMToolCall[];
 }
 
+/* -------------------------------------------------------------------------- */
+/* Phase 4 — streaming                                                         */
+/* -------------------------------------------------------------------------- */
+//
+// See cybersoul-service/doc/cybersoul-client-agent-harness-tech-approach.md
+// §4 Phase 4. Streaming lets text arrive as deltas instead of one
+// whole-string blob — the biggest perceived-latency UX win for a
+// companion product (first token in ~300ms vs ~3-8s today).
+
+/**
+ * One event from a streaming LLM call. Discriminated on `type`:
+ *
+ *   - "text-delta" — a partial text chunk. Concatenate all deltas to
+ *     reconstruct the full text. May fire many times per turn.
+ *   - "tool-call-delta" — a partial tool-call chunk (rare; most
+ *     providers emit complete tool calls at the end of the stream).
+ *   - "tool-call" — a complete tool call parsed from the stream.
+ *   - "message-complete" — the stream ended. Carries the final
+ *     assembled textResponse + usage info when available.
+ *   - "error" — the stream errored mid-flight. The iterator rejects
+ *     (callers see it via for-await rejection); this event variant
+ *     is reserved for non-fatal stream warnings the SDK wants to
+ *     surface but continue past.
+ */
+export type LLMStreamEvent =
+  | { type: "text-delta"; delta: string }
+  | { type: "tool-call-delta"; id?: string; name?: string; argumentsDelta?: string }
+  | { type: "tool-call"; toolCall: LLMToolCall }
+  | {
+      type: "message-complete";
+      textResponse: string;
+      toolCalls: LLMToolCall[];
+      usage?: { inputTokens?: number; outputTokens?: number };
+      stopReason?: string;
+    }
+  | { type: "error"; error: unknown };
+
 export interface BaseLLMProvider {
   generate(
     messages: { role: string; content: string }[],
@@ -762,6 +812,30 @@ export interface BaseLLMProvider {
     maxTokens?: number;
     temperature?: number;
   }): Promise<LLMChatResult>;
+
+  /**
+   * OPTIONAL Phase 4 streaming variant of `chat()`. When implemented,
+   * the harness can route to it when `llmConfig.capabilities.streaming
+   * === true` — text arrives as deltas via the AsyncIterable instead
+   * of as one whole-string blob.
+   *
+   * Contract mirrors `chat()`: same params, same capability shape.
+   * The return is an `AsyncIterable<LLMStreamEvent>` the caller
+   * `for await`s over. The harness assembles the events into the
+   * same `LLMChatResult`-equivalent intent shape non-streaming
+   * produces, so downstream is identical — only the delivery timing
+   * changes.
+   *
+   * The iterable MUST emit a `message-complete` event as the last
+   * non-error event. Errors propagate via iterator rejection (the
+   * `for await` throws — callers use `try/catch`).
+   */
+  chatStream?(params: {
+    messages: Array<LLMConversationMessage | LLMPlainMessage>;
+    tools: LLMToolDeclaration[];
+    maxTokens?: number;
+    temperature?: number;
+  }): AsyncIterable<LLMStreamEvent>;
 }
 
 /**
@@ -776,6 +850,20 @@ export function supportsToolCalling(
   provider: BaseLLMProvider,
 ): provider is BaseLLMProvider & { chat: NonNullable<BaseLLMProvider['chat']> } {
   return typeof (provider as BaseLLMProvider).chat === 'function';
+}
+
+/**
+ * Phase 4 runtime capability check for streaming. Returns true iff
+ * the provider implements the optional `chatStream()` method. The
+ * harness uses this (combined with `llmConfig.capabilities.streaming
+ * === true`) to decide whether to stream text deltas.
+ */
+export function supportsStreaming(
+  provider: BaseLLMProvider,
+): provider is BaseLLMProvider & {
+  chatStream: NonNullable<BaseLLMProvider['chatStream']>;
+} {
+  return typeof (provider as BaseLLMProvider).chatStream === 'function';
 }
 
 export type ModelCustomConfigValueType =

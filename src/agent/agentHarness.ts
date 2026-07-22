@@ -47,7 +47,7 @@ import type {
   PersistedDynamicContext,
   ProactiveParams,
 } from "../types.js";
-import { InteractRequestType } from "../types.js";
+import { InteractRequestType, supportsToolCalling } from "../types.js";
 import type { ToolContext, ToolFailure } from "./types.js";
 import type { EventStream } from "./eventStream.js";
 import {
@@ -168,6 +168,33 @@ export class AgentHarness {
   /* ============================================================ */
 
   /**
+   * Throw a typed `CyberSoulError` (kind `"llm-capability-mismatch"`)
+   * if the configured LLM provider doesn't implement `chat()`.
+   *
+   * Called at the top of both tool-calling dispatch methods so a
+   * capability mismatch surfaces as an actionable, typed error
+   * instead of a confusing `TypeError: this.llm.chat is not a
+   * function` from the non-null assertion at the call site. The
+   * error is a `CyberSoulError` (not a plain `Error`) so `client.ts`'s
+   * outer catch re-throws it instead of wrapping it in the legacy
+   * `{ status: "error" }` envelope — callers can branch on
+   * `instanceof CyberSoulError` + `err.kind`.
+   *
+   * The error message is intentionally prescriptive — it tells the
+   * operator exactly which knob to turn (unset
+   * `capabilities.toolCalling` to fall back to the JSON-dispatcher).
+   * This is the Scenario-D fix from the Phase 2.1 design review.
+   */
+  private assertToolCallingSupported(): void {
+    if (!supportsToolCalling(this.llm)) {
+      throw new CyberSoulError(
+        "llm-capability-mismatch",
+        "Tool-calling dispatch path selected (llmConfig.capabilities.toolCalling === true) but the LLM provider does not implement chat(). Either implement chat() on the provider, or unset capabilities.toolCalling to fall back to the JSON-dispatcher path.",
+      );
+    }
+  }
+
+  /**
    * Phase 2 native tool-calling dispatcher (see
    * cybersoul-service/doc/cybersoul-client-agent-harness-tech-approach.md
    * §3.3.1 + §4 Phase 2). Replaces the JSON-schema-in-prompt +
@@ -188,12 +215,14 @@ export class AgentHarness {
    * the two paths. This is what makes the Phase 2 swap a single
    * routing decision in client.ts.
    *
-   * Capability contract: callers MUST pre-check
-   * `supportsToolCalling(this.llm)` before invoking this method. If
-   * the provider doesn't implement `chat()`, calling this would throw
-   * at the `this.llm.chat(...)` line — the harness deliberately does
-   * NOT add a defensive fallback here, because silently degrading to
-   * the JSON-dispatcher would hide a misconfiguration.
+   * Capability contract: this method checks `supportsToolCalling(
+   * this.llm)` at the top and throws a typed `CyberSoulError` (kind
+   * `"llm-capability-mismatch"`) with actionable guidance if the
+   * provider doesn't implement `chat()`. The harness deliberately
+   * does NOT silently degrade to the JSON-dispatcher here — that
+   * would hide a misconfiguration where the caller opted into
+   * tool-calling (`capabilities.toolCalling === true`) but is using
+   * a provider that doesn't support it.
    *
    * @param promptMessages Same {system, user} pair as
    *   `runInteractDispatch`. NOTE: the system prompt passed here
@@ -212,6 +241,7 @@ export class AgentHarness {
     promptMessages: Array<{ role: string; content: string }>,
     toolDeclarations: import("../types.js").LLMToolDeclaration[],
   ): Promise<DispatchResult> {
+    this.assertToolCallingSupported();
     const result = await this.llm.chat!({
       messages: promptMessages,
       tools: toolDeclarations,
@@ -241,7 +271,8 @@ export class AgentHarness {
    * client.ts stays untouched.
    *
    * Same capability contract as `runInteractDispatchWithTools`:
-   * pre-check `supportsToolCalling(this.llm)`.
+   * throws `CyberSoulError` (kind `"llm-capability-mismatch"`) if the
+   * provider doesn't implement `chat()`.
    */
   async runProactiveDispatchWithTools(
     promptMessages: Array<{ role: string; content: string }>,
@@ -250,6 +281,7 @@ export class AgentHarness {
     | { kind: "skip"; reason: string }
     | { kind: "proceed"; intent: DispatcherIntent }
   > {
+    this.assertToolCallingSupported();
     const result = await this.llm.chat!({
       messages: promptMessages,
       tools: toolDeclarations,

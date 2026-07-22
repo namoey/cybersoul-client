@@ -501,12 +501,27 @@ export class GenericLLMProvider implements BaseLLMProvider {
           body,
         );
       }
+      // 4xx other than auth/rate-limit (e.g. 400 bad request, 404 wrong
+      // model name). Surface as a generic LLM API error — usually
+      // indicates a misaligned template / model name rather than a
+      // transient failure. For the chat() path specifically, a 400 with
+      // a message about `tools` or `functions` almost always means the
+      // provider/model doesn't actually support tool-calling despite
+      // the template being configured for it — append actionable
+      // guidance so the operator knows which knob to turn. This is the
+      // Scenario-B fix from the Phase 2.1 design review.
+      const looksToolRelated = /tool|function|unsupported|unknown.*param/i.test(
+        providerMsg,
+      );
+      const hint = looksToolRelated
+        ? " This provider may not support tool-calling. If so, unset llmConfig.capabilities.toolCalling to fall back to the JSON-dispatcher path, or verify the template's toolsPayloadTemplate matches this provider's API."
+        : "";
       throw new CyberSoulLlmApiError(
         this.config.provider,
         this.config.model,
         response.status,
         apiUrl,
-        `LLM provider returned HTTP ${response.status}: ${providerMsg}`,
+        `LLM provider returned HTTP ${response.status}: ${providerMsg}.${hint}`,
         body,
       );
     }

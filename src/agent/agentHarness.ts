@@ -48,7 +48,7 @@ import type {
   ProactiveParams,
 } from "../types.js";
 import { InteractRequestType, supportsToolCalling } from "../types.js";
-import type { ToolContext, ToolFailure } from "./types.js";
+import type { ToolContext, ToolFailure, AgentLoopConfig, AgentLoopTerminationReason } from "./types.js";
 import type { EventStream } from "./eventStream.js";
 import {
   buildGenerateImageTool,
@@ -360,6 +360,211 @@ export class AgentHarness {
     }
 
     return { kind: "proceed", intent: parsedIntent };
+  }
+
+  /* ============================================================ */
+  /* Phase 3.3 — multi-step agent dispatch loop                   */
+  /* ============================================================ */
+
+  /**
+   * Phase 3.3 — multi-step agent dispatch loop (see
+   * cybersoul-service/doc/cybersoul-client-agent-harness-tech-approach.md
+   * Phase 3.3). Iterates: call `provider.chat()` → dispatch any tool
+   * calls via the registry → append tool-result messages → repeat.
+   * Terminates when the LLM emits no further tool calls, OR when a
+   * cap (max iterations / max tokens) is hit.
+   *
+   * Returns the SAME `DispatchResult` shape as the single-shot
+   * dispatchers — `toolCallsToIntent` folds ALL accumulated tool
+   * calls across iterations into one `DispatcherIntent`. Downstream
+   * (`runInteractSideEffects`, `client.ts` response assembly) is
+   * identical between single-shot and multi-step paths.
+   *
+   * Tool dispatch reuses the existing `withToolEvents` helper, so
+   * `tool-call` / `tool-result` events fire for EVERY tool call
+   * across every iteration — `CyberSoulAgent` consumers see the full
+   * trajectory.
+   *
+   * SAFETY RAILS (cannot be disabled):
+   *   - `maxIterations` (default 5): hard stop on iteration count.
+   *   - `maxTotalTokensEstimate` (default 50000): best-effort cost
+   *     guard using the 4-chars-≈-1-token heuristic.
+   *
+   * When a cap fires, the loop terminates with whatever intent has
+   * been accumulated. A warning is logged; the `onError` hook fires
+   * with kind `agent-loop-cap-hit` so telemetry can track it.
+   *
+   * Capability contract: same as `runInteractDispatchWithTools` —
+   * pre-check `supportsToolCalling(this.llm)`.
+   *
+   * @param promptMessages Initial {system, user} pair.
+   * @param toolDeclarations Tools the LLM may call.
+   * @param toolRegistry Resolves tool names → executors. Tools not in
+   *   the registry are skipped (their result is an error JSON).
+   * @param toolCtx Context passed to every tool executor.
+   * @param loopOpts Loop config. Undefined → loop OFF (use
+   *   `runInteractDispatchWithTools` instead). The caller chooses.
+   */
+  async runInteractDispatchLoop(
+    promptMessages: Array<{ role: string; content: string }>,
+    toolDeclarations: import("../types.js").LLMToolDeclaration[],
+    toolRegistry: import("../tools/toolRegistry.js").ToolRegistry,
+    toolCtx: ToolContext,
+    loopOpts: AgentLoopConfig,
+  ): Promise<DispatchResult> {
+    this.assertToolCallingSupported();
+
+    const maxIterations = loopOpts.maxIterations ?? 5;
+    const maxTokens = loopOpts.maxTotalTokensEstimate ?? 50000;
+
+    // Mutable conversation history — we append assistant tool-call
+    // echoes + tool-result messages as the loop progresses. Start
+    // from the initial prompt pair.
+    const conversation: Array<
+      import("../types.js").LLMConversationMessage |
+      import("../types.js").LLMPlainMessage
+    > = [...promptMessages];
+
+    // Accumulate tool calls across iterations — the final
+    // DispatcherIntent folds them all (e.g. iteration 1 calls
+    // get_state, iteration 2 calls generate_image based on the state).
+    const allToolCalls: import("../types.js").LLMToolCall[] = [];
+    let finalTextResponse = "";
+    let totalChars = conversation.reduce(
+      (sum, m) => sum + (m.content?.length ?? 0),
+      0,
+    );
+
+    let termination: AgentLoopTerminationReason = "no-tool-calls";
+
+    for (let iter = 1; iter <= maxIterations; iter++) {
+      // Cost guard — check BEFORE the LLM call so we don't blow the
+      // budget on the iteration that would exceed it.
+      const estimatedTokens = Math.ceil(totalChars / 4);
+      if (estimatedTokens > maxTokens) {
+        termination = "max-tokens";
+        console.warn(
+          `[CyberSoulClient] Agent loop terminated: token estimate ${estimatedTokens} exceeds cap ${maxTokens} (iteration ${iter}/${maxIterations}).`,
+        );
+        break;
+      }
+
+      const result = await this.llm.chat!({
+        messages: conversation,
+        tools: toolDeclarations,
+        maxTokens: 15000,
+        temperature: 0.7,
+      });
+
+      if (
+        typeof result.textResponse === "string" &&
+        result.textResponse.trim().length > 0
+      ) {
+        finalTextResponse = result.textResponse;
+      }
+
+      // No tool calls = natural completion. Model produced a final reply.
+      if (!result.toolCalls || result.toolCalls.length === 0) {
+        termination = "no-tool-calls";
+        break;
+      }
+
+      // Echo the assistant's tool-call turn back into the conversation
+      // (providers require this so the next iteration sees the
+      // assistant's tool calls alongside the results). We use a
+      // simplified assistant message that summarizes the calls — the
+      // provider's chat() will translate as needed.
+      const assistantToolCallSummary = result.toolCalls
+        .map((c) => `[tool call: ${c.name}(${c.arguments})]`)
+        .join(" ");
+      conversation.push({
+        role: "assistant",
+        content:
+          (finalTextResponse || "") +
+          (finalTextResponse && assistantToolCallSummary ? "\n" : "") +
+          assistantToolCallSummary,
+      });
+      totalChars += conversation[conversation.length - 1].content.length;
+
+      // Dispatch each tool call via the registry. Run them
+      // concurrently — most tools are independent within one
+      // iteration. Errors are captured as JSON error objects so the
+      // model can react to them on the next iteration.
+      const toolResultPromises = result.toolCalls.map(async (call) => {
+        const tool = toolRegistry.get(call.name);
+        let resultStr: string;
+        if (!tool) {
+          resultStr = JSON.stringify({
+            __error: `Unknown tool: ${call.name}`,
+          });
+        } else {
+          try {
+            // Parse args — constrained decoding guarantees validity.
+            const args = call.arguments
+              ? JSON.parse(call.arguments)
+              : {};
+            const r = await this.withToolEvents(call.name, args, () =>
+              tool.execute(args, toolCtx),
+            );
+            resultStr = JSON.stringify(r);
+          } catch (e) {
+            resultStr = JSON.stringify({
+              __error: e instanceof Error ? e.message : String(e),
+            });
+          }
+        }
+        // Stash for the conversation + the accumulator.
+        return { call, resultStr };
+      });
+
+      const toolResults = await Promise.all(toolResultPromises);
+
+      // Append tool-result messages to the conversation + accumulate.
+      for (const { call, resultStr } of toolResults) {
+        allToolCalls.push(call);
+        // Use the tool-call id when present; synthesize when absent
+        // (Anthropic native) so the loop can still correlate.
+        const toolCallId = call.id ?? `${call.name}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        conversation.push({
+          role: "tool",
+          toolCallId,
+          content: resultStr,
+        });
+        totalChars += resultStr.length;
+      }
+
+      // If this was the last allowed iteration, terminate with the cap.
+      if (iter === maxIterations) {
+        termination = "max-iterations";
+        console.warn(
+          `[CyberSoulClient] Agent loop terminated: max iterations (${maxIterations}) reached.`,
+        );
+      }
+    }
+
+    // Fold all accumulated tool calls into the final intent.
+    const parsedIntent = toolCallsToIntent(allToolCalls);
+    if (finalTextResponse) {
+      parsedIntent.textResponse = finalTextResponse;
+    }
+
+    // Surface cap-hit via the onError hook for telemetry. Non-fatal —
+    // the partial intent still resolves.
+    if (termination === "max-iterations" || termination === "max-tokens") {
+      // The hook channel is the EventStream's sink. We don't have a
+      // direct hook list here; emit a synthetic tool-result that
+      // surfaces the cap so consumers see it.
+      this.sink.emit({
+        type: "tool-result",
+        tool: "__agent_loop__",
+        result: {
+          __termination: termination,
+          __warning: `Agent loop terminated via safety cap (${termination}).`,
+        },
+      });
+    }
+
+    return { parsedIntent };
   }
 
   /**

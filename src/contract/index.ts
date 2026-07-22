@@ -55,6 +55,7 @@ export type {
   LLMToolDeclaration,
   LLMToolCall,
   LLMChatResult,
+  LLMConversationMessage,
   ModelCustomConfigValueType,
   IModelCustomConfigField,
   IVoiceModel,
@@ -131,6 +132,8 @@ export type {
   HookName,
   HookPayload,
   TurnParams,
+  AgentLoopConfig,
+  AgentLoopTerminationReason,
 } from "../agent/types.js";
 
 // AsyncEventQueue — exported for callers that want to build their own

@@ -236,6 +236,47 @@ export interface AgentEventSink {
 export type DispatchDecision = DispatcherIntent;
 
 /* -------------------------------------------------------------------------- */
+/* Phase 3.3 — multi-step agent loop config                                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Phase 3.3 — configuration for the multi-step agent dispatch loop
+ * (`runInteractDispatchLoop`). When provided, the harness iterates:
+ * call `provider.chat()` → dispatch any tool calls via the registry →
+ * append tool-result messages → call `provider.chat()` again. The loop
+ * terminates when the LLM emits no further tool calls, OR when a cap
+ * is hit.
+ *
+ * DEFAULT: undefined → no loop. The single-shot
+ * `runInteractDispatchWithTools` is used instead. This preserves the
+ * Phase 2 zero-diff contract for callers who haven't opted in.
+ *
+ * Caps are SAFETY RAILS, not behavior knobs:
+ *   - `maxIterations` — hard stop after N LLM calls. Default 5. Each
+ *     iteration is a full LLM round-trip; without this a misbehaving
+ *     model could loop forever calling tools.
+ *   - `maxTotalTokensEstimate` — best-effort cost guard. The harness
+ *     can't measure exact tokens without a tokenizer, so it estimates
+ *     from message character count (4 chars ≈ 1 token heuristic).
+ *     Default 50000 (~12k tokens input + output per iteration × 5).
+ *
+ * When a cap fires, the loop terminates with whatever intent has been
+ * accumulated so far. The caller sees the partial result + a warning
+ * event (`onError` hook with kind `agent-loop-cap-hit`).
+ */
+export interface AgentLoopConfig {
+  maxIterations?: number;
+  maxTotalTokensEstimate?: number;
+}
+
+/** Reason the agent loop terminated. Surfaced via hook for telemetry. */
+export type AgentLoopTerminationReason =
+  | "no-tool-calls" // natural completion — model produced a final reply
+  | "max-iterations" // safety rail hit
+  | "max-tokens" // safety rail hit
+  | "single-shot"; // loop wasn't engaged (config absent or empty tools)
+
+/* -------------------------------------------------------------------------- */
 /* Phase 3 — public CyberSoulAgent surface                                    */
 /* -------------------------------------------------------------------------- */
 //

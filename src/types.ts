@@ -50,6 +50,25 @@ export interface CyberSoulClientConfig {
    * See HistoryCompactionConfig + agent/historyCompactor.ts.
    */
   historyCompaction?: HistoryCompactionConfig;
+  /**
+   * Phase 3.3 — optional multi-step agent loop. When set AND
+   * `llmConfig.capabilities.toolCalling === true`, the harness
+   * iterates: call provider.chat() → dispatch tool calls → feed
+   * results back → repeat. Lets the model observe tool results
+   * (e.g. image generation failed) and react mid-turn instead of
+   * committing blind.
+   *
+   * DEFAULT UNSET → single-shot dispatch (Phase 2 behavior) even
+   * when tool-calling is on. Per-turn override via
+   * `InteractParams.agentLoop` (set `null` to disable for one turn).
+   *
+   * REQUIRES `capabilities.toolCalling === true`. If tool-calling is
+   * off, agentLoop is silently ignored (the JSON-dispatcher path
+   * doesn't loop).
+   *
+   * See AgentLoopConfig + agent/agentHarness.ts runInteractDispatchLoop.
+   */
+  agentLoop?: import("./agent/types.js").AgentLoopConfig | null;
 }
 
 /**
@@ -188,6 +207,11 @@ export interface ProactiveParams {
    * contract as InteractParams.historyCompaction — see there.
    */
   historyCompaction?: HistoryCompactionConfig | null;
+  /**
+   * Phase 3.3 — per-turn override for the multi-step agent loop.
+   * Same contract as InteractParams.agentLoop — see there.
+   */
+  agentLoop?: import("./agent/types.js").AgentLoopConfig | null;
   history?: HistoryEntry[];
   maxUnreplied?: number;
   requestTypes?: InteractRequestType[];
@@ -285,6 +309,13 @@ export interface InteractParams {
    * defaults to off → today's slice-20 behavior).
    */
   historyCompaction?: HistoryCompactionConfig | null;
+  /**
+   * Phase 3.3 — per-turn override for the multi-step agent loop.
+   * Same contract as `CyberSoulClientConfig.agentLoop` — see there.
+   * Pass `null` to explicitly disable the loop for this turn even
+   * when the client default is on.
+   */
+  agentLoop?: import("./agent/types.js").AgentLoopConfig | null;
   /**
    * When true, the character is permitted to SKIP replying to the user's
    * message — simulating a real human who sometimes goes quiet based on
@@ -613,13 +644,63 @@ export interface LLMToolDeclaration {
  * callers `JSON.parse()` it. With native tool-calling this parse
  * CANNOT fail because the provider enforced the schema at decode time
  * (see §3.3.1).
+ *
+ * Phase 3.3 — `id` is optional but REQUIRED for the multi-step loop:
+ * when the harness feeds tool results back to the LLM, the provider
+ * needs to correlate each result with the original tool call. OpenAI/
+ * MiniMax require `tool_call_id` on the result message; Anthropic
+ * uses `tool_use_id`. The provider adapter maps from this canonical
+ * `id` to whatever the provider expects.
  */
 export interface LLMToolCall {
+  /**
+   * Optional provider-assigned ID for this tool call. Present in the
+   * OpenAI/MiniMax response shape; absent in Anthropic's native shape
+   * (which uses content-block indices). When present, the multi-step
+   * loop includes it on the corresponding tool-result message.
+   */
+  id?: string;
   /** Tool name. Matches `LLMToolDeclaration.name` the provider received. */
   name: string;
   /** Raw JSON-string arguments. Schema-conformant by construction. */
   arguments: string;
 }
+
+/**
+ * Conversation message shape accepted by `provider.chat()`. Phase 3.3
+ * extends the original `{ role, content }` shape with a tool-result
+ * variant so the multi-step agent loop can feed tool results back to
+ * the LLM.
+ *
+ * Discriminated on `role`:
+ *   - "system" | "user" | "assistant" — plain content message.
+ *   - "tool" — a tool-result message. The provider adapter translates
+ *     this into the provider's tool-result format (OpenAI's
+ *     `{role:"tool", tool_call_id, content}`, Anthropic's
+ *     `{role:"user", content: [{type:"tool_result", tool_use_id,
+ *     content}]}).
+ */
+export type LLMConversationMessage =
+  | { role: "system" | "user" | "assistant"; content: string }
+  | {
+      role: "tool";
+      /**
+       * ID of the tool call this result answers. Matches
+       * `LLMToolCall.id`. When the original call had no id (Anthropic
+       * native), the provider adapter correlates by index.
+       */
+      toolCallId: string;
+      /** Tool-result payload as a JSON string. */
+      content: string;
+    };
+
+/**
+ * Loose message shape accepted at API boundaries where the caller has
+ * plain `{role, content}` messages (the original Phase 2 shape). This
+ * is assignable to `LLMConversationMessage` without manual narrowing.
+ * Used by harness call sites that build messages from prompt strings.
+ */
+export type LLMPlainMessage = { role: string; content: string };
 
 /**
  * Result of a tool-calling LLM turn. The harness uses `toolCalls` to
@@ -669,7 +750,14 @@ export interface BaseLLMProvider {
    * not as deltas.
    */
   chat?(params: {
-    messages: { role: string; content: string }[];
+    /**
+     * Phase 3.3 — widened to accept tool-result messages so the
+     * multi-step agent loop can feed tool results back to the LLM.
+     * Plain `{role, content}` messages remain valid (the original
+     * Phase 2 shape). The provider's `chat()` implementation
+     * normalizes via `normalizeMessagesForProvider`.
+     */
+    messages: Array<LLMConversationMessage | LLMPlainMessage>;
     tools: LLMToolDeclaration[];
     maxTokens?: number;
     temperature?: number;

@@ -1,4 +1,4 @@
-import { BaseLLMProvider, GenericLLMConfig, LLMToolCall, LLMChatResult, LLMToolDeclaration } from './types.js';
+import { BaseLLMProvider, GenericLLMConfig, LLMToolCall, LLMChatResult, LLMToolDeclaration, LLMConversationMessage } from './types.js';
 import {
   CyberSoulLlmApiError,
   CyberSoulLlmAuthError,
@@ -8,6 +8,37 @@ import {
   CyberSoulLlmUnavailableError,
   CyberSoulNetworkError,
 } from './errors.js';
+
+/**
+ * Phase 3.3 — translate the canonical `LLMConversationMessage[]` into
+ * the OpenAI-compatible message format that most provider templates
+ * expect. Plain `{role, content}` messages pass through unchanged;
+ * tool-result messages (`role: "tool"`) become
+ * `{role:"tool", tool_call_id, content}`.
+ *
+ * Pure function, no IO. Exported so callers building custom providers
+ * can reuse the same translation.
+ *
+ * Providers with non-OpenAI formats (e.g. Anthropic native API without
+ * the OpenAI-compat shim) need their own translation; for now we ship
+ * the OpenAI shape because that's what MiniMax + most compatible APIs
+ * use, and Anthropic has an OpenAI-compat endpoint that accepts it.
+ */
+export function normalizeMessagesForProvider(
+  messages: Array<LLMConversationMessage | { role: string; content: string }>,
+): Array<{ role: string; content: string; tool_call_id?: string }> {
+  return messages.map((m) => {
+    if (m.role === "tool") {
+      const tool = m as Extract<LLMConversationMessage, { role: "tool" }>;
+      return {
+        role: "tool",
+        content: m.content,
+        tool_call_id: tool.toolCallId,
+      };
+    }
+    return { role: m.role, content: m.content };
+  });
+}
 
 /**
  * Wrap a raw `fetch`-layer throw (TypeError "Network request failed" /
@@ -419,7 +450,17 @@ export class GenericLLMProvider implements BaseLLMProvider {
       Object.assign(payload, this.config.customSettings);
     }
     if (!payload.messages || (Array.isArray(payload.messages) && payload.messages.length === 0)) {
-      payload.messages = params.messages;
+      // Phase 3.3 — translate the canonical LLMConversationMessage[]
+      // shape into the OpenAI-compatible message format that most
+      // provider templates expect. Plain {role, content} messages
+      // pass through unchanged; tool-result messages become
+      // {role:"tool", tool_call_id, content}.
+      //
+      // Providers with non-OpenAI formats (e.g. Anthropic native)
+      // need their own translation; for now we ship the OpenAI shape
+      // because that's what MiniMax + most compatible APIs use, and
+      // Anthropic has an OpenAI-compat shim endpoint that accepts it.
+      payload.messages = normalizeMessagesForProvider(params.messages);
     }
 
     // Inject the tool declarations per the template's instructions.

@@ -58,7 +58,7 @@ import { ContextManager } from "./agent/contextManager.js";
 import { EventStream } from "./agent/eventStream.js";
 import { AgentHarness } from "./agent/agentHarness.js";
 import { HistoryCompactor } from "./agent/historyCompactor.js";
-import type { ToolContext, Tool } from "./agent/types.js";
+import type { ToolContext, Tool, AgentLoopConfig } from "./agent/types.js";
 import { buildStatePatchPayload } from "./tools/stateTools.js";
 import { ToolRegistry } from "./tools/toolRegistry.js";
 import {
@@ -187,6 +187,22 @@ export class CyberSoulClient {
   ): HistoryCompactionConfig | null {
     if (turnLevel !== undefined) return turnLevel;
     return this.config.historyCompaction ?? null;
+  }
+
+  /**
+   * Phase 3.3 — resolve the effective agent-loop config for a turn.
+   * Per-turn value wins over client-level; null per-turn explicitly
+   * disables. Undefined per-turn falls back to client-level (which
+   * defaults to undefined → no loop = single-shot dispatch).
+   *
+   * Returns null when the loop is OFF. The harness then uses the
+   * single-shot runInteractDispatchWithTools instead.
+   */
+  private resolveAgentLoopConfig(
+    turnLevel: AgentLoopConfig | null | undefined,
+  ): AgentLoopConfig | null {
+    if (turnLevel !== undefined) return turnLevel;
+    return this.config.agentLoop ?? null;
   }
 
   /**
@@ -583,14 +599,29 @@ export class CyberSoulClient {
       //    cybersoul-service/doc/cybersoul-client-agent-harness-tech-approach.md
       //    §4 Phase 2 + §5.3 (feature-flagged, default off).
       const useToolCalling = this.shouldUseToolCalling();
+      const loopConfig = this.resolveAgentLoopConfig(params.agentLoop);
       let parsedIntent: DispatcherIntent;
       if (useToolCalling) {
         const registry = this.buildTurnToolRegistry(sink, params.extraTools);
         const declarations = registry.buildToolDeclarations();
-        ({ parsedIntent } = await harness.runInteractDispatchWithTools(
-          promptMessages,
-          declarations,
-        ));
+        const toolCtx = this.buildToolContext(ctx.state, params);
+        if (loopConfig) {
+          // Phase 3.3 — multi-step agent loop. Iterates until no tool
+          // calls or a safety cap fires. Same DispatchResult shape
+          // downstream.
+          ({ parsedIntent } = await harness.runInteractDispatchLoop(
+            promptMessages,
+            declarations,
+            registry,
+            toolCtx,
+            loopConfig,
+          ));
+        } else {
+          ({ parsedIntent } = await harness.runInteractDispatchWithTools(
+            promptMessages,
+            declarations,
+          ));
+        }
       } else {
         ({ parsedIntent } = await harness.runInteractDispatch(
           promptMessages,
@@ -801,6 +832,12 @@ export class CyberSoulClient {
       //    is a judgment call, not creative reply. Phase 2 routes to
       //    the native tool-calling path when opted in (same gate as
       //    interact — see step 4 there).
+      //
+      //    Phase 3.3 NOTE: the multi-step agent loop is NOT wired into
+      //    proactive today. Proactive turns are rare + simple (decide
+      //    whether to reach out + what to say); the loop's value is
+      //    reactive side-effects, which proactive doesn't have. The
+      //    agentLoop config is accepted but ignored on this path.
       const useToolCalling = this.shouldUseToolCalling();
       const decision = useToolCalling
         ? await harness.runProactiveDispatchWithTools(

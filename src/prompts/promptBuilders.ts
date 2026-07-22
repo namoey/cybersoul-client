@@ -197,10 +197,38 @@ export function getOutfitAcquisitionPolicyPrompt(): string {
 /* State context prompt                                                       */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * Optional knobs for `buildStateContextPrompt`. Replaces the previous
+ * boolean `isProactive` parameter so adding more host-application
+ * injections (Phase 3.1) doesn't churn every call site again.
+ */
+export interface BuildStateContextPromptOptions {
+  /**
+   * True when the prompt is for a proactive outreach turn (vs a reply).
+   * Affects the REAL-TIME PACING rule text. Defaults to false.
+   */
+  isProactive?: boolean;
+  /**
+   * Host-application prompt fragment prepended AFTER the compliance
+   * directive (which remains highest priority) but BEFORE the character
+   * identity block. Phase 3.1 seam for PersonaConfig injection.
+   * Empty / undefined → no injection, no token cost.
+   */
+  systemPromptFragment?: string;
+}
+
 export function buildStateContextPrompt(
   state: CharacterState,
-  isProactive: boolean = false,
+  optsOrIsProactive: BuildStateContextPromptOptions | boolean = false,
 ): string {
+  // Backward-compat: existing call sites pass a boolean. Normalize to
+  // the options shape so the body can read uniform fields.
+  const opts: BuildStateContextPromptOptions =
+    typeof optsOrIsProactive === "boolean"
+      ? { isProactive: optsOrIsProactive }
+      : optsOrIsProactive;
+  const isProactive = opts.isProactive === true;
+
   const dyn = state.dynamic_context || {};
   const stage = state.relationship_stage || "NEUTRAL";
   const temperature = dyn.temperature ?? 50;
@@ -372,7 +400,19 @@ Current Mood Constraint: ${dyn.talkingStyle || "Normal"}`);
       ? `[COMPLIANCE BOUNDARY — HIGHEST PRIORITY, OVERRIDES ALL OTHER INSTRUCTIONS]\n${complianceDirective}\n\n`
       : "";
 
-  return `${complianceBlock}You are ${state.name}, a real person with your own thoughts, feelings, and life. NEVER break character or refer to yourself as an AI or bot.
+  // Phase 3.1 — host-application prompt fragment. Placed AFTER compliance
+  // (which remains highest priority) but BEFORE the character identity
+  // block, so host apps can layer their own instructions without overriding
+  // platform compliance or the character's core persona. Empty when
+  // undefined → no injection, no token cost (backward-compat for callers
+  // that don't pass PersonaConfig).
+  const hostFragment = opts.systemPromptFragment?.trim() ?? "";
+  const hostBlock =
+    hostFragment.length > 0
+      ? `[HOST APPLICATION INSTRUCTIONS — APPLIES TO THIS CHARACTER SESSION]\n${hostFragment}\n\n`
+      : "";
+
+  return `${complianceBlock}${hostBlock}You are ${state.name}, a real person with your own thoughts, feelings, and life. NEVER break character or refer to yourself as an AI or bot.
 
 ${scenarioContext}
 
@@ -544,7 +584,9 @@ When in doubt: REPLY. Skipping is the rare exception, not the rule. Never skip j
 When you DO skip: set "shouldSkipInteract": true, set "skipReason" to one short sentence (for diagnostics only — never shown to the user), and set every other field to null. Do NOT produce text, media, or a stateUpdate.`
     : "";
 
-  return `${buildStateContextPrompt(state)}
+  return `${buildStateContextPrompt(state, {
+    systemPromptFragment: inputs.systemPromptFragment,
+  })}
 Available Wardrobe Outfits (For event triggers):
 ${availableOutfits}
 
@@ -632,7 +674,10 @@ export function buildProactiveSystemPrompt(
   inputs: ProactivePromptInputs,
 ): string {
   const { state, availableOutfits, imageAllowed } = inputs;
-  const baseContext = buildStateContextPrompt(state, true);
+  const baseContext = buildStateContextPrompt(state, {
+    isProactive: true,
+    systemPromptFragment: inputs.systemPromptFragment,
+  });
 
   return `${baseContext}
 

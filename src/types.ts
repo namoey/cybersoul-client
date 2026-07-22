@@ -132,6 +132,17 @@ export interface OutfitGiftedPayload {
 }
 
 export interface ProactiveParams {
+  /**
+   * Optional host-application prompt fragment. Same contract as
+   * InteractParams.systemPromptFragment — see there for placement and
+   * Phase 3.1 rationale.
+   */
+  systemPromptFragment?: string;
+  /**
+   * Phase 3.1b — optional extra tools. Same contract as
+   * InteractParams.extraTools — see there for execution semantics.
+   */
+  extraTools?: import("./agent/types.js").Tool[];
   history?: HistoryEntry[];
   maxUnreplied?: number;
   requestTypes?: InteractRequestType[];
@@ -184,8 +195,40 @@ export interface InteractParams {
   localContext?: string;
   requestTypes?: InteractRequestType[];
   history?: HistoryEntry[];
-  /**
-   * When true, the character is permitted to SKIP replying to the user's
+  /**   * Optional host-application prompt fragment prepended to the system
+   * prompt, between the compliance directive (highest priority) and
+   * the character's identity block. Lets host apps layer their own
+   * instructions on top of the character baseline (e.g. "Always reply
+   * in French", "This user is a premium subscriber").
+   *
+   * Phase 3.1 — this is the seam `CyberSoulAgent` uses to inject
+   * `PersonaConfig.systemPromptFragment`. Callers that use
+   * `CyberSoulClient` directly can also pass it explicitly.
+   *
+   * Empty / undefined → no behavior change (no token cost, no
+   * prompt mutation). When present, the builder wraps it as:
+   *
+   *   `[HOST APPLICATION INSTRUCTIONS]\n<fragment>\n\n`
+   *
+   * and places it AFTER `[COMPLIANCE BOUNDARY]` (which remains highest
+   * priority) but BEFORE the character identity block.
+   */
+  systemPromptFragment?: string;  /**
+   * Phase 3.1b — optional extra tools to register alongside the built-in
+   * toolset. Lets host apps register character-specific capabilities
+   * (e.g. "remember my birthday", "check my calendar") that the LLM
+   * can call during a tool-calling turn.
+   *
+   * When `capabilities.toolCalling` is OFF (the default), this field is
+   * stored but NOT executed — the JSON-dispatcher path doesn't dispatch
+   * tools from the registry, only the built-in side-effect tools via
+   * `runInteractSideEffects`. Custom tools only fire when tool-calling
+   * is enabled AND the LLM emits a matching tool call.
+   *
+   * Name collisions with built-in tools (speak, generate_image, etc.)
+   * throw at registry-build time — choose distinct names.
+   */
+  extraTools?: import("./agent/types.js").Tool[];  /**   * When true, the character is permitted to SKIP replying to the user's
    * message — simulating a real human who sometimes goes quiet based on
    * context, personality, and relationship state. Defaults to false so
    * existing callers always get a reply (backward compatible).

@@ -213,7 +213,10 @@ export class CyberSoulClient {
    * registry never invokes the executor with the wrong shape (callers
    * that build the tool also build the args that go with it).
    */
-  private buildTurnToolRegistry(sink: EventStream): ToolRegistry {
+  private buildTurnToolRegistry(
+    sink: EventStream,
+    extraTools: Tool[] = [],
+  ): ToolRegistry {
     return new ToolRegistry([
       speakTool,
       buildUpdateStateTool(),
@@ -225,6 +228,7 @@ export class CyberSoulClient {
       endTurnTool,
       skipTurnTool,
       skipProactiveTool,
+      ...extraTools,
     ] as unknown as Tool[]);
   }
 
@@ -252,6 +256,7 @@ export class CyberSoulClient {
       isAuto,
       requestedOthers,
       allowSkip: params.allowSkip === true,
+      systemPromptFragment: params.systemPromptFragment,
     });
 
     const transcript =
@@ -345,6 +350,7 @@ export class CyberSoulClient {
       state,
       availableOutfits,
       imageAllowed,
+      systemPromptFragment: params.systemPromptFragment,
     });
 
     const transcript =
@@ -458,7 +464,7 @@ export class CyberSoulClient {
       const useToolCalling = this.shouldUseToolCalling();
       let parsedIntent: DispatcherIntent;
       if (useToolCalling) {
-        const registry = this.buildTurnToolRegistry(sink);
+        const registry = this.buildTurnToolRegistry(sink, params.extraTools);
         const declarations = registry.buildToolDeclarations();
         ({ parsedIntent } = await harness.runInteractDispatchWithTools(
           promptMessages,
@@ -678,7 +684,7 @@ export class CyberSoulClient {
       const decision = useToolCalling
         ? await harness.runProactiveDispatchWithTools(
             promptMessages,
-            this.buildTurnToolRegistry(sink).buildToolDeclarations(),
+            this.buildTurnToolRegistry(sink, params.extraTools).buildToolDeclarations(),
           )
         : await harness.runProactiveDispatch(promptMessages);
       if (decision.kind === "skip") {

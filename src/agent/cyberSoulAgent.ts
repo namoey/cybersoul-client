@@ -64,17 +64,43 @@ export class CyberSoulAgent {
   private readonly client: CyberSoulClient;
   private readonly hooks: Hook[];
   private readonly customTools: Tool[];
+  private readonly systemPromptFragment: string | undefined;
 
   constructor(options: CyberSoulAgentOptions) {
     this.client = options.client;
     this.hooks = options.hooks ? [...options.hooks] : [];
     this.customTools = options.tools ? [...options.tools] : [];
-    // NOTE: options.persona is accepted but not yet consumed — see
-    // PersonaConfig doc. Phase 3.1 will wire it into prompt assembly
-    // once the prompt builder exposes a seam. Stored on the instance
-    // implicitly via closure over `options` would be wasteful; the
-    // constructor intentionally drops the reference so unused persona
-    // fields don't accidentally leak into future debugging.
+    // Phase 3.1 — store the persona's systemPromptFragment so run() /
+    // runProactive() can inject it into every turn. Other persona
+    // fields (e.g. displayName) are still reserved for future
+    // Phase 3.x wiring; only systemPromptFragment is consumed today.
+    this.systemPromptFragment = options.persona?.systemPromptFragment;
+  }
+
+  /**
+   * Resolve the effective systemPromptFragment for a turn: caller's
+   * per-turn value wins over the agent's persona-level value (so a
+   * caller can override or unset it ad-hoc). `undefined` when neither
+   * is set → no injection, byte-identical to the legacy prompt.
+   */
+  private resolveSystemPromptFragment(
+    turnLevel: string | undefined,
+  ): string | undefined {
+    if (turnLevel !== undefined) return turnLevel;
+    return this.systemPromptFragment;
+  }
+
+  /**
+   * Phase 3.1b — resolve the effective extraTools for a turn. Caller's
+   * per-turn value wins over the agent's persona-level value (so a
+   * caller can override or unset ad-hoc by passing `[]`). Empty when
+   * neither is set → no extra tools registered.
+   */
+  private resolveExtraTools(
+    turnLevel: Tool[] | undefined,
+  ): Tool[] {
+    if (turnLevel !== undefined) return turnLevel;
+    return this.customTools;
   }
 
   /**
@@ -105,6 +131,15 @@ export class CyberSoulAgent {
     // the queue when it does.
     const turnPromise = this.client.interact({
       ...params,
+      // Phase 3.1 — inject the persona's fragment unless the caller
+      // explicitly overrode it at the turn level.
+      systemPromptFragment: this.resolveSystemPromptFragment(
+        params.systemPromptFragment,
+      ),
+      // Phase 3.1b — register the agent's custom tools alongside the
+      // built-in toolset. Caller's per-turn extraTools (if any) wins
+      // over the constructor-level persona tools.
+      extraTools: this.resolveExtraTools(params.extraTools),
       onTextReady: (text, actionText, metadata) => {
         queue.push({
           type: "text-ready",
@@ -172,6 +207,10 @@ export class CyberSoulAgent {
 
     const turnPromise = this.client.proactiveInteract({
       ...params,
+      systemPromptFragment: this.resolveSystemPromptFragment(
+        params.systemPromptFragment,
+      ),
+      extraTools: this.resolveExtraTools(params.extraTools),
       onTextReady: (text, actionText, metadata) => {
         queue.push({
           type: "text-ready",

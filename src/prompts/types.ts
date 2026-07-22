@@ -27,12 +27,23 @@ export interface InteractPromptInputs {
    * decides based on personality, context, and relationship state.
    */
   allowSkip?: boolean;
+  /**
+   * Phase 3.1 — host-application prompt fragment. Forwarded to
+   * `buildStateContextPrompt` which prepends it after the compliance
+   * directive. Undefined → no injection.
+   */
+  systemPromptFragment?: string;
 }
 
 export interface ProactivePromptInputs {
   state: CharacterState;
   availableOutfits: string;
   imageAllowed: boolean;
+  /**
+   * Phase 3.1 — host-application prompt fragment. Same contract as
+   * `InteractPromptInputs.systemPromptFragment`.
+   */
+  systemPromptFragment?: string;
 }
 
 export interface OndemandEventPromptInputs {

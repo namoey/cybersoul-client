@@ -195,6 +195,51 @@ export class AgentHarness {
   }
 
   /**
+   * Phase 3.1c — wrap a tool execution with `tool-call` + `tool-result`
+   * events so `CyberSoulAgent` consumers see each side-effect fire on
+   * the AsyncIterable surface. The events are emitted BEFORE the
+   * executor starts and AFTER it settles, regardless of success or
+   * failure — consumers always see the closing `tool-result`.
+   *
+   * Result shape:
+   *   - Success → `{ type: "tool-result", tool, result: <TResult> }`
+   *   - Failure → `{ type: "tool-result", tool, result: { __error: ... } }`
+   *
+   * The error is re-thrown after emission so the harness's existing
+   * typed-error-capture logic (`captureMediaError` etc.) still runs.
+   * Events are an OBSERVATION channel — they do not change the
+   * control flow of the side-effect layer.
+   *
+   * For backward compatibility with `client.ts` callers using the
+   * legacy EventStream, the EventStream treats `tool-call` /
+   * `tool-result` as no-op (no legacy callback to fan out to) — only
+   * `CyberSoulAgent` consumers actually see them via the
+   * AsyncEventQueue.
+   */
+  private async withToolEvents<T>(
+    toolName: string,
+    args: Record<string, unknown>,
+    exec: () => Promise<T>,
+  ): Promise<T> {
+    this.sink.emit({ type: "tool-call", tool: toolName, args });
+    try {
+      const result = await exec();
+      this.sink.emit({ type: "tool-result", tool: toolName, result });
+      return result;
+    } catch (e) {
+      this.sink.emit({
+        type: "tool-result",
+        tool: toolName,
+        result: {
+          __error: e instanceof Error ? e.message : String(e),
+          __kind: e instanceof CyberSoulError ? e.kind : undefined,
+        },
+      });
+      throw e;
+    }
+  }
+
+  /**
    * Phase 2 native tool-calling dispatcher (see
    * cybersoul-service/doc/cybersoul-client-agent-harness-tech-approach.md
    * §3.3.1 + §4 Phase 2). Replaces the JSON-schema-in-prompt +
@@ -505,8 +550,9 @@ export class AgentHarness {
     if (parsedIntent.triggerEvent) {
       const triggerEvent = buildTriggerEventTool();
       tasks.push(
-        triggerEvent
-          .execute(parsedIntent.triggerEvent, toolCtx)
+        this.withToolEvents("trigger_event", parsedIntent.triggerEvent as Record<string, unknown>, () =>
+          triggerEvent.execute(parsedIntent.triggerEvent!, toolCtx),
+        )
           .then((r: TriggerEventResult) => {
             if (r.triggered) triggeredEvent = r.triggered;
           }),
@@ -521,12 +567,11 @@ export class AgentHarness {
       parsedIntent.giftOutfit.descriptionText.trim().length > 0
     ) {
       const giftOutfit = buildGiftOutfitTool(this.sink);
+      const giftArgs = { descriptionText: parsedIntent.giftOutfit.descriptionText };
       tasks.push(
-        giftOutfit
-          .execute(
-            { descriptionText: parsedIntent.giftOutfit.descriptionText },
-            toolCtx,
-          )
+        this.withToolEvents("gift_outfit", giftArgs, () =>
+          giftOutfit.execute(giftArgs, toolCtx),
+        )
           .then((r: GiftOutfitResult) => {
             if (r.giftedOutfit) giftedOutfit = r.giftedOutfit;
           }),
@@ -542,11 +587,13 @@ export class AgentHarness {
         parsedIntent.imageParams && typeof parsedIntent.imageParams === "object"
           ? parsedIntent.imageParams
           : { mode: "full-prompt", full_prompt: resolvedTextResponse };
+      const imageArgs = imagePayload as Record<string, unknown>;
 
       const generateImage = buildGenerateImageTool(this.sink);
       tasks.push(
-        generateImage
-          .execute(imagePayload as Record<string, unknown>, toolCtx)
+        this.withToolEvents("generate_image", imageArgs, () =>
+          generateImage.execute(imageArgs, toolCtx),
+        )
           .then((r: GenerateImageResult) => {
             imageUrl = r.imageUrl;
             imageMediaId = r.imageMediaId;
@@ -566,17 +613,16 @@ export class AgentHarness {
         parsedIntent.voiceArgs && typeof parsedIntent.voiceArgs === "object"
           ? (parsedIntent.voiceArgs as Record<string, unknown>)
           : {};
+      const voiceArgs = {
+        textForVoice: resolvedTextResponse,
+        dynamicArgs: normalizedVoiceArgs,
+      };
 
       const generateVoice = buildGenerateVoiceTool(this.sink);
       tasks.push(
-        generateVoice
-          .execute(
-            {
-              textForVoice: resolvedTextResponse,
-              dynamicArgs: normalizedVoiceArgs,
-            },
-            toolCtx,
-          )
+        this.withToolEvents("generate_voice", voiceArgs as unknown as Record<string, unknown>, () =>
+          generateVoice.execute(voiceArgs, toolCtx),
+        )
           .then((r: GenerateVoiceResult) => {
             audioUrl = r.audioUrl;
             audioMediaId = r.audioMediaId;

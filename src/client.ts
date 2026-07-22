@@ -1,5 +1,6 @@
 import {
   CyberSoulClientConfig,
+  HistoryCompactionConfig,
   InteractParams,
   ProactiveParams,
   ProactiveResponse,
@@ -56,6 +57,7 @@ import { CyberSoulApi } from "./api/cyberSoulApi.js";
 import { ContextManager } from "./agent/contextManager.js";
 import { EventStream } from "./agent/eventStream.js";
 import { AgentHarness } from "./agent/agentHarness.js";
+import { HistoryCompactor } from "./agent/historyCompactor.js";
 import type { ToolContext, Tool } from "./agent/types.js";
 import { buildStatePatchPayload } from "./tools/stateTools.js";
 import { ToolRegistry } from "./tools/toolRegistry.js";
@@ -104,6 +106,14 @@ export class CyberSoulClient {
   private llm: BaseLLMProvider;
   private api: CyberSoulApi;
   private context: ContextManager;
+  /**
+   * Phase 3.2 — lazily-created per-client HistoryCompactor. Built
+   * once from `config.historyCompaction` (or per-turn override) so
+   * the cache survives across turns within a session. `null` when
+   * compaction is disabled (the default).
+   */
+  private historyCompactor: HistoryCompactor | null = null;
+  private historyCompactorConfig: HistoryCompactionConfig | null = null;
 
   /* ==================== Constructor ==================== */
 
@@ -126,6 +136,111 @@ export class CyberSoulClient {
     );
 
     this.context = new ContextManager(this.api);
+
+    // Phase 3.2 — eagerly build the compactor when the client-level
+    // config is set, so the first turn doesn't pay the construction
+    // cost. Per-turn overrides rebuild on demand (rare).
+    if (config.historyCompaction) {
+      this.applyHistoryCompactionConfig(config.historyCompaction);
+    }
+  }
+
+  /**
+   * Phase 3.2 — (re)build the HistoryCompactor for a given config.
+   * Called once from the constructor for the client-level default,
+   * and again when a per-turn override differs from the cached one.
+   *
+   * The compactor is per-client (not per-turn) so the summary cache
+   * survives across turns — re-summarizing every turn would be
+   * exorbitantly expensive for the llm-summary strategy.
+   */
+  private applyHistoryCompactionConfig(
+    cfg: HistoryCompactionConfig,
+  ): void {
+    // Skip the rebuild if the effective config is unchanged — per-turn
+    // overrides that match the client default shouldn't bust the cache.
+    if (
+      this.historyCompactorConfig &&
+      JSON.stringify(this.historyCompactorConfig) === JSON.stringify(cfg)
+    ) {
+      return;
+    }
+    this.historyCompactor = new HistoryCompactor({
+      strategy: cfg.strategy,
+      maxRawEntries: cfg.maxRawEntries,
+      reSummarizeThreshold: cfg.reSummarizeThreshold,
+    });
+    this.historyCompactorConfig = cfg;
+  }
+
+  /**
+   * Phase 3.2 — resolve the effective history-compaction config for a
+   * turn. Per-turn value wins over client-level. `null` per-turn
+   * explicitly disables (useful for A/B). Undefined per-turn falls
+   * back to client-level (which defaults to undefined → off).
+   *
+   * Returns `null` when compaction is OFF (the default) — callers
+   * then use today's `buildHistoryTranscript` slice.
+   */
+  private resolveHistoryCompactionConfig(
+    turnLevel: HistoryCompactionConfig | null | undefined,
+  ): HistoryCompactionConfig | null {
+    if (turnLevel !== undefined) return turnLevel;
+    return this.config.historyCompaction ?? null;
+  }
+
+  /**
+   * Phase 3.2 — build the chat-history transcript for a turn, using
+   * the configured HistoryCompactor when compaction is enabled, or
+   * falling back to today's `buildHistoryTranscript` slice when not.
+   *
+   * When compaction is on AND the strategy is "llm-summary", the
+   * client's own `summarizeHistory` method is auto-wired as the
+   * `summarizeFn` — callers never need to wire it themselves. This
+   * is the Phase 3.2 deliverable that closes Phase 3.1's deferred
+   * "llm-summary wired to client.summarizeHistory automatically".
+   *
+   * The compactor instance is per-client (cached) so the summary
+   * survives across turns. Per-turn override (when different from
+   * the cached config) rebuilds the compactor and resets the cache.
+   */
+  private async buildTranscript(
+    history: HistoryEntry[] | undefined,
+    state: CharacterState,
+    turnLevelCompaction: HistoryCompactionConfig | null | undefined,
+  ): Promise<string> {
+    // No history or empty → nothing to do. buildHistoryTranscript
+    // handles this too, but bail early so compaction logic never
+    // sees empty input.
+    if (!history || history.length === 0) return "";
+
+    const cfg = this.resolveHistoryCompactionConfig(turnLevelCompaction);
+    if (!cfg) {
+      // Compaction OFF — today's verbatim slice.
+      return buildHistoryTranscript(history, state);
+    }
+
+    // Compaction ON — make sure the cached compactor matches the
+    // effective config (rebuild on per-turn override change).
+    this.applyHistoryCompactionConfig(cfg);
+    const compactor = this.historyCompactor!;
+
+    const agentName =
+      state.dynamic_context?.agentNickname || state.name || "Agent";
+    const userName = state.dynamic_context?.userNickname || "User";
+
+    // Auto-wire summarizeHistory for llm-summary strategy. For bullet
+    // strategy summarizeFn is unused (the compactor ignores it).
+    const summarizeFn = (entries: HistoryEntry[]) =>
+      this.summarizeHistory(entries);
+
+    const result = await compactor.compactAsync(
+      history,
+      userName,
+      agentName,
+      summarizeFn,
+    );
+    return result.transcript;
   }
 
   /* ============================================================ */
@@ -241,14 +356,14 @@ export class CyberSoulClient {
    * Mirrors the legacy `buildInteractPromptMessages` — same prompt
    * builders, same transcript assembly, same `allowSkip` propagation.
    */
-  private buildInteractPromptMessages(
+  private async buildInteractPromptMessages(
     state: CharacterState,
     availableOutfits: string,
     types: InteractRequestType[],
     isAuto: boolean,
     requestedOthers: InteractRequestType[],
     params: InteractParams,
-  ): Array<{ role: string; content: string }> {
+  ): Promise<Array<{ role: string; content: string }>> {
     const systemPrompt = buildInteractSystemPrompt({
       state,
       availableOutfits,
@@ -259,10 +374,14 @@ export class CyberSoulClient {
       systemPromptFragment: params.systemPromptFragment,
     });
 
-    const transcript =
-      params.history && params.history.length > 0
-        ? buildHistoryTranscript(params.history, state)
-        : "";
+    // Phase 3.2 — use the configured HistoryCompactor when enabled,
+    // else fall back to today's buildHistoryTranscript slice. The
+    // await is a no-op for the bullet strategy / disabled path.
+    const transcript = await this.buildTranscript(
+      params.history,
+      state,
+      params.historyCompaction,
+    );
     const userName = state.dynamic_context?.userNickname || "User";
 
     const userContent = buildInteractUserMessage({
@@ -340,12 +459,12 @@ export class CyberSoulClient {
   /* Private — proactive helpers (prompt assembly)                */
   /* ============================================================ */
 
-  private buildProactivePromptMessages(
+  private async buildProactivePromptMessages(
     state: CharacterState,
     availableOutfits: string,
     imageAllowed: boolean,
     params: ProactiveParams,
-  ): Array<{ role: string; content: string }> {
+  ): Promise<Array<{ role: string; content: string }>> {
     const systemPrompt = buildProactiveSystemPrompt({
       state,
       availableOutfits,
@@ -353,10 +472,12 @@ export class CyberSoulClient {
       systemPromptFragment: params.systemPromptFragment,
     });
 
-    const transcript =
-      params.history && params.history.length > 0
-        ? buildHistoryTranscript(params.history, state)
-        : "";
+    // Phase 3.2 — same compaction-aware transcript build as interact.
+    const transcript = await this.buildTranscript(
+      params.history,
+      state,
+      params.historyCompaction,
+    );
 
     const userContent = buildProactiveUserMessage({
       localContext: params.localContext,
@@ -441,7 +562,7 @@ export class CyberSoulClient {
       const ctx = await this.context.prepareInteract(params);
 
       // 2. Build the {system, user} prompt pair.
-      const promptMessages = this.buildInteractPromptMessages(
+      const promptMessages = await this.buildInteractPromptMessages(
         ctx.state,
         ctx.availableOutfits,
         ctx.types,
@@ -665,7 +786,7 @@ export class CyberSoulClient {
       const ctx = await this.context.prepareProactive(params);
 
       // 3. Build the LLM prompt.
-      const promptMessages = this.buildProactivePromptMessages(
+      const promptMessages = await this.buildProactivePromptMessages(
         ctx.state,
         ctx.availableOutfits,
         ctx.imageAllowed,

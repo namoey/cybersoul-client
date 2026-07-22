@@ -27,6 +27,7 @@
 export type {
   GenericLLMConfig,
   CyberSoulClientConfig,
+  HistoryCompactionConfig,
   HistoryEntry,
   InteractMetadata,
   PersistedDynamicContext,
@@ -135,3 +136,13 @@ export type {
 // AsyncEventQueue — exported for callers that want to build their own
 // event adapters on top of the same primitive the agent uses.
 export { AsyncEventQueue } from "../agent/asyncEventQueue.js";
+
+// Phase 3.2 — HistoryCompactor + the strategy types. Exported so
+// callers can construct their own compactors (e.g. for tests or for
+// custom turn pipelines) without reaching into agent/ internals.
+export { HistoryCompactor } from "../agent/historyCompactor.js";
+export type {
+  HistoryCompactorOptions,
+  CompactedHistory,
+  CompactionStrategy,
+} from "../agent/historyCompactor.js";

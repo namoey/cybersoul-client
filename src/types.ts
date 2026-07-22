@@ -35,6 +35,46 @@ export interface CyberSoulClientConfig {
    * conform to the standard `fetch` signature.
    */
   fetchImpl?: typeof fetch;
+  /**
+   * Phase 3.2 — optional in-turn history compaction. When set, the
+   * client owns a `HistoryCompactor` instance and uses it instead of
+   * the legacy `buildHistoryTranscript` slice. Lets long conversations
+   * maintain continuity past the 20-entry window without the LLM
+   * "forgetting" earlier emotionally-weighty moments.
+   *
+   * DEFAULT UNSET → today's behavior (slice last 20, drop older).
+   * Callers opt in by providing a config; per-turn override via
+   * `InteractParams.historyCompaction` (set `null` to disable for
+   * one turn).
+   *
+   * See HistoryCompactionConfig + agent/historyCompactor.ts.
+   */
+  historyCompaction?: HistoryCompactionConfig;
+}
+
+/**
+ * Phase 3.2 — config for in-turn history compaction.
+ *
+ * `strategy`:
+ *   - "bullet" (default, zero LLM cost): one-line-per-turn summary.
+ *   - "llm-summary" (expensive, cached): narrative paragraph via the
+ *     client's `summarizeHistory` method. The harness auto-wires the
+ *     summarizeFn — callers don't pass it.
+ *
+ * `maxRawEntries`: verbatim recent-window size. Default 20 (= today's
+ * slice). Older entries are folded per `strategy`.
+ *
+ * `reSummarizeThreshold`: only for "llm-summary". Re-summarize when
+ * the compacted window grows by this many new entries since the last
+ * summary. Default 10.
+ *
+ * Exported through the contract barrel so callers can construct it
+ * without reaching into agent/ internals.
+ */
+export interface HistoryCompactionConfig {
+  strategy?: "bullet" | "llm-summary";
+  maxRawEntries?: number;
+  reSummarizeThreshold?: number;
 }
 
 export enum InteractRequestType {
@@ -143,6 +183,11 @@ export interface ProactiveParams {
    * InteractParams.extraTools — see there for execution semantics.
    */
   extraTools?: import("./agent/types.js").Tool[];
+  /**
+   * Phase 3.2 — per-turn override for history compaction. Same
+   * contract as InteractParams.historyCompaction — see there.
+   */
+  historyCompaction?: HistoryCompactionConfig | null;
   history?: HistoryEntry[];
   maxUnreplied?: number;
   requestTypes?: InteractRequestType[];
@@ -228,7 +273,20 @@ export interface InteractParams {
    * Name collisions with built-in tools (speak, generate_image, etc.)
    * throw at registry-build time — choose distinct names.
    */
-  extraTools?: import("./agent/types.js").Tool[];  /**   * When true, the character is permitted to SKIP replying to the user's
+  extraTools?: import("./agent/types.js").Tool[];
+  /**
+   * Phase 3.2 — per-turn override for history compaction. When
+   * provided, takes precedence over the client-level
+   * `CyberSoulClientConfig.historyCompaction`. Pass `null` to
+   * explicitly disable compaction for this turn even when the
+   * client default is on (useful for A/B testing).
+   *
+   * Default undefined → use the client-level setting (which itself
+   * defaults to off → today's slice-20 behavior).
+   */
+  historyCompaction?: HistoryCompactionConfig | null;
+  /**
+   * When true, the character is permitted to SKIP replying to the user's
    * message — simulating a real human who sometimes goes quiet based on
    * context, personality, and relationship state. Defaults to false so
    * existing callers always get a reply (backward compatible).

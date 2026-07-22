@@ -99,3 +99,39 @@ export {
 } from "../errors.js";
 
 export { VERSION } from "../version.js";
+
+/* ------------------------------------------------------------------ */
+/* Phase 3 — public CyberSoulAgent surface                            */
+/* ------------------------------------------------------------------ */
+//
+// See cybersoul-service/doc/cybersoul-client-agent-harness-tech-approach.md
+// §4 Phase 3. These are ADDITIVE — callers that use `CyberSoulClient`
+// directly are unaffected. The agent types are the "graduate to"
+// surface for power users that want streaming-shaped event
+// consumption via `AsyncIterable<AgentEvent>`.
+
+// The agent class itself.
+export { CyberSoulAgent } from "../agent/cyberSoulAgent.js";
+
+// Agent-layer primitives callers need to construct an agent, register
+// custom tools, register hooks, and consume the event stream.
+export type {
+  AgentEvent,
+  AgentRunParams,
+  AgentProactiveParams,
+  PersonaConfig,
+  CyberSoulAgentOptions,
+  Tool,
+  ToolInputSchema,
+  ToolContext,
+  ToolResult,
+  ToolFailure,
+  Hook,
+  HookName,
+  HookPayload,
+  TurnParams,
+} from "../agent/types.js";
+
+// AsyncEventQueue — exported for callers that want to build their own
+// event adapters on top of the same primitive the agent uses.
+export { AsyncEventQueue } from "../agent/asyncEventQueue.js";

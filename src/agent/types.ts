@@ -196,10 +196,14 @@ export type AgentEvent =
   | { type: "state-ready"; persisted: import("../types.js").PersistedDynamicContext }
   | { type: "media-ready"; payload: import("../types.js").MediaReadyPayload }
   | { type: "outfit-gifted"; payload: import("../types.js").OutfitGiftedPayload }
-  // Phase 2+ events — reserved, not emitted in Phase 1:
+  // Phase 2+ events — reserved, not emitted until the harness gains
+  // per-tool / per-token emission:
   | { type: "text-delta"; delta: string }
   | { type: "tool-call"; tool: string; args: Record<string, unknown> }
   | { type: "tool-result"; tool: string; result: unknown }
+  // Phase 3 — emitted by CyberSoulAgent.run() at the end of a
+  // successful turn. `response` is the InteractResponse (interact)
+  // or ProactiveResponse (proactive).
   | { type: "turn-complete"; response: unknown };
 
 /**
@@ -230,3 +234,97 @@ export interface AgentEventSink {
  * touching the harness signature.
  */
 export type DispatchDecision = DispatcherIntent;
+
+/* -------------------------------------------------------------------------- */
+/* Phase 3 — public CyberSoulAgent surface                                    */
+/* -------------------------------------------------------------------------- */
+//
+// See cybersoul-service/doc/cybersoul-client-agent-harness-tech-approach.md
+// §4 Phase 3. These types make the internal agent primitives public so
+// power users can construct a CyberSoulAgent, register custom tools,
+// register hooks, and iterate an AsyncIterable<AgentEvent> instead of
+// wiring legacy callbacks.
+//
+// CyberSoulClient stays as the stable facade — none of these types are
+// required to use the client. They're the "graduate to" surface for
+// callers that want streaming-shaped consumption.
+
+/**
+ * Optional character persona metadata for `CyberSoulAgent`.
+ *
+ * The character's authoritative identity still comes from the
+ * underlying `CyberSoulClient`'s `characterKey` — the persona config
+ * here is for host-application overrides and forward-looking features
+ * (custom system-prompt fragments, display-name overrides, etc.).
+ *
+ * Phase 3 stores these but the harness does NOT yet inject most of
+ * them — that's a Phase 3.1 follow-up once the prompt builder exposes
+ * a seam for persona-driven prompt assembly. The fields are typed now
+ * so the constructor signature is stable.
+ */
+export interface PersonaConfig {
+  /**
+   * Optional display-name override. Defaults to the backend
+   * character's `name`. Useful when a host application wants to layer
+   * its own naming (e.g. a user-assigned nickname distinct from the
+   * character's canonical name).
+   */
+  displayName?: string;
+
+  /**
+   * Optional system-prompt fragment prepended to every turn. Lets host
+   * applications layer their own instructions on top of the
+   * character's baseline (e.g. "Always reply in French",
+   * "This user is a premium subscriber"). Phase 3 stores but does not
+   * inject this — Phase 3.1 wires it into the prompt builder.
+   */
+  systemPromptFragment?: string;
+}
+
+/**
+ * Params for `CyberSoulAgent.run()` — `InteractParams` minus the
+ * legacy callback params (the agent owns event delivery via the
+ * `AsyncIterable<AgentEvent>` return value).
+ *
+ * If a caller passes both the agent AND legacy callbacks (by going
+ * back to `client.interact()` directly), the agent's stream and the
+ * callbacks both fire — the two paths don't interfere.
+ */
+export type AgentRunParams = Omit<
+  import("../types.js").InteractParams,
+  "onTextReady" | "onStateReady" | "onMediaReady" | "onOutfitGifted"
+>;
+
+/**
+ * Params for `CyberSoulAgent.runProactive()` — `ProactiveParams`
+ * minus the legacy callback params. Same rationale as
+ * `AgentRunParams`.
+ */
+export type AgentProactiveParams = Omit<
+  import("../types.js").ProactiveParams,
+  "onTextReady" | "onStateReady" | "onMediaReady" | "onOutfitGifted"
+>;
+
+/**
+ * Constructor options for `CyberSoulAgent`.
+ *
+ * `client` is required — the agent wraps a `CyberSoulClient` and
+ * delegates every actual capability (LLM call, backend transport,
+ * state management) to it. The agent is purely an event-delivery
+ * adapter that exposes the AsyncIterable surface.
+ */
+export interface CyberSoulAgentOptions {
+  /** The wrapped client. Required. */
+  client: import("../client.js").CyberSoulClient;
+  /** Optional persona metadata (see PersonaConfig). */
+  persona?: PersonaConfig;
+  /**
+   * Optional custom tools to register alongside the built-in set.
+   * Phase 3 stores these on the agent for Phase 3.1's
+   * `ToolRegistry`-driven prompt assembly; the built-in tools always
+   * run regardless.
+   */
+  tools?: Tool[];
+  /** Optional observability hooks (see Hook). */
+  hooks?: Hook[];
+}

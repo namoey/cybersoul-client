@@ -562,6 +562,10 @@ export function buildInteractSystemPrompt(
 ): string {
   const { state, availableOutfits, types, requestedOthers } = inputs;
   const allowSkip = inputs.allowSkip === true;
+  // Default true = classic JSON-dispatcher path embeds the schema.
+  // Agent path (embedJsonSchemaHint: false) omits it — uses native
+  // tool declarations + constrained decoding instead.
+  const embedJsonSchemaHint = inputs.embedJsonSchemaHint !== false;
   const modalitiesInstruction = buildInteractModalitiesInstruction(
     types,
     inputs.isAuto,
@@ -584,13 +588,45 @@ When in doubt: REPLY. Skipping is the rare exception, not the rule. Never skip j
 When you DO skip: set "shouldSkipInteract": true, set "skipReason" to one short sentence (for diagnostics only — never shown to the user), and set every other field to null. Do NOT produce text, media, or a stateUpdate.`
     : "";
 
+  // The schema hint block — ONLY for the classic JSON-dispatcher path.
+  // The agent path gets native tool declarations via toolsPayloadTemplate
+  // and the provider's constrained decoding enforces the shape (§3.3.1).
+  // Embedding a duplicate schema wastes tokens + can conflict with the
+  // constrained-decoding mask.
+  const schemaHint = embedJsonSchemaHint
+    ? `Output JSON Schema:
+{
+  ${allowSkip ? `"shouldSkipInteract": false,\n  "skipReason": null,` : `"shouldSkipInteract": null,`}
+  "actionText": "(Scene descriptions, physical actions, expressions, inner feelings) ONLY. Never include spoken dialogue here.",
+  "textResponse": "Spoken dialogue ONLY. Never include actions or parentheses.",
+  "likePreviousPicture": false,
+  "stateUpdate": { "temperatureDelta": 1, "userNickname": "How character addresses user", "agentNickname": "How user addresses character", "talkingStyle": "Current speaking style", "ongoingScene": { "scene": "Current physical scene/activity", "outfit": "Current outfit wording; use 'naked' when applicable" } },
+  "giftOutfit": { "descriptionText": "Concise description of the newly acquired outfit to add into wardrobe." },
+  "userAnalysis": { "newFactsLearned": [{ "category": "realName|occupation|age|gender|hobby|trait|communicationStyle|boundary|preference", "value": "explicit new user fact about the human from THEIR VERY LAST MESSAGE" }] },
+  "isEndTurn": false,
+  "triggerEvent": {
+    ${getEventSchemaParams(state.dynamic_context?.userNickname)}
+  },
+  ${getImageSchemaParams(requestedOthers.includes(InteractRequestType.IMAGE))},
+  ${getVoiceSchemaFromState(state, requestedOthers.includes(InteractRequestType.VOICE))}
+}
+Note: Always include "isEndTurn". If "imageParams", "voiceArgs", "triggerEvent", "giftOutfit", or "userAnalysis" are not needed, set them to null. "stateUpdate" cannot be null.${allowSkip ? ' If "shouldSkipInteract" is true, set "skipReason" to one short sentence and set EVERY other field to null (no textResponse, no stateUpdate, no media).' : ''} Return valid raw JSON only.`
+    : "";
+
+  // The intro line differs between paths:
+  // - Classic: "return a JSON object..." (references the embedded schema)
+  // - Agent: "respond using the available tools." (references native tools)
+  const introLine = embedJsonSchemaHint
+    ? `The user has sent a message. You must evaluate the context and the user's message, and return a JSON object (no markdown formatting) that dictates the character's multi-modal response.`
+    : `The user has sent a message. Evaluate the context and respond using the available tools.`;
+
   return `${buildStateContextPrompt(state, {
     systemPromptFragment: inputs.systemPromptFragment,
   })}
 Available Wardrobe Outfits (For event triggers):
 ${availableOutfits}
 
-The user has sent a message. You must evaluate the context and the user's message, and return a JSON object (no markdown formatting) that dictates the character's multi-modal response.
+${introLine}
 ${skipSection}
 
 ${modalitiesInstruction}
@@ -616,23 +652,7 @@ If the user explicitly praises, loves, or stars the VERY LAST picture you sent (
 
 Voice direction for voiceArgs: ${getVoiceDirectorInstruction(state)}
 
-Output JSON Schema:
-{
-  ${allowSkip ? `"shouldSkipInteract": false,\n  "skipReason": null,` : `"shouldSkipInteract": null,`}
-  "actionText": "(Scene descriptions, physical actions, expressions, inner feelings) ONLY. Never include spoken dialogue here.",
-  "textResponse": "Spoken dialogue ONLY. Never include actions or parentheses.",
-  "likePreviousPicture": false,
-  "stateUpdate": { "temperatureDelta": 1, "userNickname": "How character addresses user", "agentNickname": "How user addresses character", "talkingStyle": "Current speaking style", "ongoingScene": { "scene": "Current physical scene/activity", "outfit": "Current outfit wording; use 'naked' when applicable" } },
-  "giftOutfit": { "descriptionText": "Concise description of the newly acquired outfit to add into wardrobe." },
-  "userAnalysis": { "newFactsLearned": [{ "category": "realName|occupation|age|gender|hobby|trait|communicationStyle|boundary|preference", "value": "explicit new user fact about the human from THEIR VERY LAST MESSAGE" }] },
-  "isEndTurn": false,
-  "triggerEvent": {
-    ${getEventSchemaParams(state.dynamic_context?.userNickname)}
-  },
-  ${getImageSchemaParams(requestedOthers.includes(InteractRequestType.IMAGE))},
-  ${getVoiceSchemaFromState(state, requestedOthers.includes(InteractRequestType.VOICE))}
-}
-Note: Always include "isEndTurn". If "imageParams", "voiceArgs", "triggerEvent", "giftOutfit", or "userAnalysis" are not needed, set them to null. "stateUpdate" cannot be null.${allowSkip ? ' If "shouldSkipInteract" is true, set "skipReason" to one short sentence and set EVERY other field to null (no textResponse, no stateUpdate, no media).' : ''} Return valid raw JSON only.`;
+${schemaHint}`;
 }
 
 /**
@@ -674,10 +694,30 @@ export function buildProactiveSystemPrompt(
   inputs: ProactivePromptInputs,
 ): string {
   const { state, availableOutfits, imageAllowed } = inputs;
+  // Default true = classic JSON-dispatcher path embeds the schema.
+  const embedJsonSchemaHint = inputs.embedJsonSchemaHint !== false;
   const baseContext = buildStateContextPrompt(state, {
     isProactive: true,
     systemPromptFragment: inputs.systemPromptFragment,
   });
+
+  // The schema hint block — ONLY for the classic JSON-dispatcher path.
+  // Agent path uses native tool declarations + constrained decoding.
+  const schemaHint = embedJsonSchemaHint
+    ? `Output ONLY a valid JSON object matching exactly this structure (no markdown wrappers).
+If "shouldSkipProactive" is true, set "skipReason" to one short sentence and set every other field to null.
+If "shouldSkipProactive" is false, "textResponse" is required and "stateUpdate" must be provided; include "ongoingScene" only if your scene/outfit actually changed, otherwise omit it.
+{
+  "shouldSkipProactive": false,
+  "skipReason": null,
+  "actionText": "(Scene descriptions, physical actions, expressions, inner feelings) ONLY.",
+  "textResponse": "Spoken dialogue ONLY.",
+  "stateUpdate": { "temperatureDelta": 0, "ongoingScene": { "scene": "...", "outfit": "..." } },
+  "giftOutfit": { "descriptionText": "Concise description of the newly acquired outfit to add into wardrobe." },
+  ${getImageSchemaParams(imageAllowed)},
+  "voiceArgs": null
+}`
+    : `Decide whether to reach out using the available tools.`;
 
   return `${baseContext}
 
@@ -714,19 +754,7 @@ Modalities:
   - ALWAYS set 'voiceArgs' to null.
   ${getOutfitAcquisitionPolicyPrompt()}
 
-Output ONLY a valid JSON object matching exactly this structure (no markdown wrappers).
-If "shouldSkipProactive" is true, set "skipReason" to one short sentence and set every other field to null.
-If "shouldSkipProactive" is false, "textResponse" is required and "stateUpdate" must be provided; include "ongoingScene" only if your scene/outfit actually changed, otherwise omit it.
-{
-  "shouldSkipProactive": false,
-  "skipReason": null,
-  "actionText": "(Scene descriptions, physical actions, expressions, inner feelings) ONLY.",
-  "textResponse": "Spoken dialogue ONLY.",
-  "stateUpdate": { "temperatureDelta": 0, "ongoingScene": { "scene": "...", "outfit": "..." } },
-  "giftOutfit": { "descriptionText": "Concise description of the newly acquired outfit to add into wardrobe." },
-  ${getImageSchemaParams(imageAllowed)},
-  "voiceArgs": null
-}`;
+${schemaHint}`;
 }
 
 /**

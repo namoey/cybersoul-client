@@ -828,11 +828,12 @@ export class AgentHarness {
     ): void => {
       if (!failure) return;
       const e = failure.error;
-      if (
-        !(e instanceof CyberSoulInsufficientPointsError) &&
-        !(e instanceof CyberSoulWalletError) &&
-        !(e instanceof CyberSoulSensitiveContentError)
-      ) {
+      // Retain ANY typed CyberSoulError so non-wallet/non-sensitive
+      // failures (network, timeout, generic API error) still surface
+      // in-band as `mediaError` instead of being silently dropped.
+      // `buildMediaError` maps the un-typed ones to `kind: "unknown"`,
+      // which the host app renders as a friendly generic bubble.
+      if (!(e instanceof CyberSoulError)) {
         return;
       }
       if (!affected.includes(modality)) {
@@ -978,11 +979,11 @@ export class AgentHarness {
     let mediaError: CyberSoulError | null = null;
     if (r.failure) {
       const e = r.failure.error;
-      if (
-        e instanceof CyberSoulInsufficientPointsError ||
-        e instanceof CyberSoulWalletError ||
-        e instanceof CyberSoulSensitiveContentError
-      ) {
+      // Retain ANY typed CyberSoulError so the proactive path also
+      // surfaces non-wallet/non-sensitive failures in-band (see the
+      // matching change in runInteractSideEffects). buildMediaError
+      // maps the un-typed ones to `kind: "unknown"`.
+      if (e instanceof CyberSoulError) {
         mediaError = e;
         affected.push("image");
       } else {

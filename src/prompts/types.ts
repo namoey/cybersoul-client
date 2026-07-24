@@ -33,6 +33,23 @@ export interface InteractPromptInputs {
    * directive. Undefined → no injection.
    */
   systemPromptFragment?: string;
+  /**
+   * When true (default), embed the JSON schema block + the "return
+   * valid raw JSON only" instruction in the system prompt. This is
+   * what the classic JSON-dispatcher path needs — the LLM is text-
+   * then-parsed via robustJsonParse.
+   *
+   * When false, OMIT the schema entirely. The agent path uses native
+   * tool declarations via `toolsPayloadTemplate` instead, and the
+   * provider's constrained decoding enforces the response shape (see
+   * §3.3.1 of the tech-approach doc). Embedding a duplicate schema
+   * would waste tokens AND could conflict with the constrained-
+   * decoding mask.
+   *
+   * Single source of truth: both paths call the SAME
+   * `buildInteractSystemPrompt`; only this flag differs.
+   */
+  embedJsonSchemaHint?: boolean;
 }
 
 export interface ProactivePromptInputs {
@@ -44,6 +61,11 @@ export interface ProactivePromptInputs {
    * `InteractPromptInputs.systemPromptFragment`.
    */
   systemPromptFragment?: string;
+  /**
+   * Same contract as `InteractPromptInputs.embedJsonSchemaHint` —
+   * see there. Defaults to true (classic path).
+   */
+  embedJsonSchemaHint?: boolean;
 }
 
 export interface OndemandEventPromptInputs {

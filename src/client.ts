@@ -412,6 +412,7 @@ export class CyberSoulClient {
       requestedOthers,
       allowSkip: params.allowSkip === true,
       systemPromptFragment: params.systemPromptFragment,
+      embedJsonSchemaHint: params.embedJsonSchemaHint,
     });
 
     // Phase 3.2 — use the configured HistoryCompactor when enabled,
@@ -510,6 +511,7 @@ export class CyberSoulClient {
       availableOutfits,
       imageAllowed,
       systemPromptFragment: params.systemPromptFragment,
+      embedJsonSchemaHint: params.embedJsonSchemaHint,
     });
 
     // Phase 3.2 — same compaction-aware transcript build as interact.

@@ -207,6 +207,8 @@ export interface ProactiveParams {
    * contract as InteractParams.historyCompaction — see there.
    */
   historyCompaction?: HistoryCompactionConfig | null;
+  /** Same contract as InteractParams.embedJsonSchemaHint — see there. */
+  embedJsonSchemaHint?: boolean;
   /**
    * Phase 3.3 — per-turn override for the multi-step agent loop.
    * Same contract as InteractParams.agentLoop — see there.
@@ -312,6 +314,13 @@ export interface InteractParams {
    * defaults to off → today's slice-20 behavior).
    */
   historyCompaction?: HistoryCompactionConfig | null;
+  /**
+   * Phase 5 (two-path separation) — when false, the prompt builder
+   * OMITS the embedded JSON schema hint. The agent path uses this
+   * because it gets native tool declarations instead. Default
+   * undefined → the builder's own default (true = classic path).
+   */
+  embedJsonSchemaHint?: boolean;
   /**
    * Phase 3.3 — per-turn override for the multi-step agent loop.
    * Same contract as `CyberSoulClientConfig.agentLoop` — see there.

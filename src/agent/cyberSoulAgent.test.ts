@@ -62,6 +62,8 @@ const assert = {
 /**
  * Mock client. Captures the `interact()` params so the test can fire
  * the legacy callbacks in any order, then resolves the response.
+ * Includes a stub `.llm` with `chat()` so the agent's tooling-support
+ * assertion passes at construction.
  */
 class MockClient {
   public capturedInteractParams: InteractParams | null = null;
@@ -71,6 +73,11 @@ class MockClient {
     textResponse: "hi",
   };
   public interactThrow: unknown = undefined;
+  // Stub LLM with chat() so supportsToolCalling() returns true.
+  public llm = {
+    generate: async () => "{}",
+    chat: async () => ({ textResponse: "", toolCalls: [] }),
+  };
 
   async interact(params: InteractParams): Promise<InteractResponse> {
     this.capturedInteractParams = params;

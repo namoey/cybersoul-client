@@ -46,18 +46,24 @@
  */
 
 import type { CyberSoulClient } from "../client.js";
+import { CyberSoulClient as CyberSoulClientImpl } from "../client.js";
 import type {
+  CyberSoulClientConfig,
   InteractResponse,
   ProactiveResponse,
 } from "../types.js";
+import { supportsToolCalling } from "../types.js";
+import { CyberSoulError } from "../errors.js";
 import type {
   AgentEvent,
+  AgentLoopConfig,
   AgentProactiveParams,
   AgentRunParams,
   CyberSoulAgentOptions,
   Hook,
   Tool,
 } from "./types.js";
+import type { HistoryCompactionConfig } from "../types.js";
 import { AsyncEventQueue } from "./asyncEventQueue.js";
 
 export class CyberSoulAgent {
@@ -65,16 +71,59 @@ export class CyberSoulAgent {
   private readonly hooks: Hook[];
   private readonly customTools: Tool[];
   private readonly systemPromptFragment: string | undefined;
+  private readonly agentLoopConfig: AgentLoopConfig | undefined;
+  private readonly historyCompactionConfig: HistoryCompactionConfig | undefined;
 
   constructor(options: CyberSoulAgentOptions) {
-    this.client = options.client;
+    // Mode selection: either wrap an existing client or self-construct.
+    if (options.client && options.config) {
+      throw new CyberSoulError(
+        "agent-config-error",
+        "CyberSoulAgentOptions: pass either 'client' OR 'config', not both.",
+      );
+    }
+    if (!options.client && !options.config) {
+      throw new CyberSoulError(
+        "agent-config-error",
+        "CyberSoulAgentOptions: must pass either 'client' or 'config'.",
+      );
+    }
+
+    if (options.client) {
+      // Mode 1: wrap existing client.
+      this.client = options.client;
+    } else {
+      // Mode 2: self-construct. Build a client with toolCalling baked in.
+      const cfg = options.config!;
+      this.client = new CyberSoulClientImpl({
+        ...cfg,
+        llmConfig: {
+          ...cfg.llmConfig,
+          capabilities: {
+            ...cfg.llmConfig.capabilities,
+            toolCalling: true,
+          },
+        },
+      });
+    }
+
+    // STRUCTURAL ASSERTION: the agent path REQUIRES tool-calling support.
+    // This is the whole point of the two-path separation — the agent is
+    // only active when the configured LLM supports tooling. Fails fast
+    // at construction instead of producing confusing runtime errors.
+    if (!supportsToolCalling((this.client as any).llm)) {
+      throw new CyberSoulError(
+        "agent-requires-tooling",
+        "CyberSoulAgent requires an LLM provider that implements chat() (native tool-calling). " +
+          "Either configure a tool-calling-capable provider/model, or use CyberSoulClient for the classic JSON-dispatcher path.",
+      );
+    }
+
     this.hooks = options.hooks ? [...options.hooks] : [];
     this.customTools = options.tools ? [...options.tools] : [];
-    // Phase 3.1 — store the persona's systemPromptFragment so run() /
-    // runProactive() can inject it into every turn. Other persona
-    // fields (e.g. displayName) are still reserved for future
-    // Phase 3.x wiring; only systemPromptFragment is consumed today.
     this.systemPromptFragment = options.persona?.systemPromptFragment;
+    this.agentLoopConfig = options.agentLoop;
+    this.historyCompactionConfig = options.historyCompaction;
   }
 
   /**
@@ -101,6 +150,29 @@ export class CyberSoulAgent {
   ): Tool[] {
     if (turnLevel !== undefined) return turnLevel;
     return this.customTools;
+  }
+
+  /**
+   * Phase 3.3 — resolve the effective agentLoop config. Per-turn wins
+   * over constructor-level; null per-turn explicitly disables.
+   */
+  private resolveAgentLoop(
+    turnLevel: AgentLoopConfig | null | undefined,
+  ): AgentLoopConfig | null | undefined {
+    if (turnLevel !== undefined) return turnLevel;
+    return this.agentLoopConfig;
+  }
+
+  /**
+   * Phase 3.2 — resolve the effective historyCompaction config.
+   * Per-turn wins over constructor-level; null per-turn explicitly
+   * disables.
+   */
+  private resolveHistoryCompaction(
+    turnLevel: HistoryCompactionConfig | null | undefined,
+  ): HistoryCompactionConfig | null | undefined {
+    if (turnLevel !== undefined) return turnLevel;
+    return this.historyCompactionConfig;
   }
 
   /**
@@ -140,6 +212,18 @@ export class CyberSoulAgent {
       // built-in toolset. Caller's per-turn extraTools (if any) wins
       // over the constructor-level persona tools.
       extraTools: this.resolveExtraTools(params.extraTools),
+      // Phase 5 — the agent path NEVER embeds the JSON schema hint.
+      // Native tool declarations via toolsPayloadTemplate + constrained
+      // decoding enforce the response shape. The schema hint is omitted
+      // to save tokens and avoid conflicting with the constrained-
+      // decoding mask.
+      embedJsonSchemaHint: false,
+      // Phase 3.3 — inject the agent's loop config unless overridden.
+      agentLoop: this.resolveAgentLoop(params.agentLoop),
+      // Phase 3.2 — inject the agent's compaction config unless overridden.
+      historyCompaction: this.resolveHistoryCompaction(
+        params.historyCompaction,
+      ),
       // Phase 4 — forward streaming text deltas as text-delta events.
       onTextDelta: (delta) => {
         queue.push({ type: "text-delta", delta });
@@ -215,6 +299,10 @@ export class CyberSoulAgent {
         params.systemPromptFragment,
       ),
       extraTools: this.resolveExtraTools(params.extraTools),
+      embedJsonSchemaHint: false,
+      historyCompaction: this.resolveHistoryCompaction(
+        params.historyCompaction,
+      ),
       onTextDelta: (delta) => {
         queue.push({ type: "text-delta", delta });
       },

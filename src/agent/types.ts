@@ -17,7 +17,7 @@
  *    fields a provider expects in a tool declaration.
  */
 
-import type { DispatcherIntent } from "../types.js";
+import type { DispatcherIntent, HistoryCompactionConfig } from "../types.js";
 
 /* -------------------------------------------------------------------------- */
 /* Tool                                                                       */
@@ -349,23 +349,54 @@ export type AgentProactiveParams = Omit<
 /**
  * Constructor options for `CyberSoulAgent`.
  *
- * `client` is required — the agent wraps a `CyberSoulClient` and
- * delegates every actual capability (LLM call, backend transport,
- * state management) to it. The agent is purely an event-delivery
- * adapter that exposes the AsyncIterable surface.
+ * Two construction modes:
+ *
+ * 1. **Wrap an existing client** — pass `client`. The agent uses the
+ *    given client's transport, context, and LLM provider. The client's
+ *    `llmConfig.capabilities.toolCalling` MUST be true (the agent
+ *    asserts this at construction).
+ *
+ * 2. **Self-constructing** — pass `config` (the same fields as
+ *    `CyberSoulClientConfig`). The agent builds its own internal
+ *    client with `capabilities.toolCalling: true` baked in. This is
+ *    the "agent is a peer, not a wrapper" path.
+ *
+ * Either way, the constructor ASSERTS `supportsToolCalling(provider)`
+ * and throws `CyberSoulError(kind: "agent-requires-tooling")` if the
+ * LLM doesn't support tool-calling. This is the structural enforcement
+ * of "only active when the configured LLM supports tooling."
  */
 export interface CyberSoulAgentOptions {
-  /** The wrapped client. Required. */
-  client: import("../client.js").CyberSoulClient;
+  /**
+   * Mode 1: wrap an existing client. The client MUST have
+   * `capabilities.toolCalling: true` set. Mutually exclusive with
+   * `config`.
+   */
+  client?: import("../client.js").CyberSoulClient;
+  /**
+   * Mode 2: self-constructing. Pass the same config fields as
+   * `CyberSoulClientConfig`. The agent builds its own internal
+   * client. Mutually exclusive with `client`.
+   */
+  config?: import("../types.js").CyberSoulClientConfig;
   /** Optional persona metadata (see PersonaConfig). */
   persona?: PersonaConfig;
   /**
    * Optional custom tools to register alongside the built-in set.
-   * Phase 3 stores these on the agent for Phase 3.1's
-   * `ToolRegistry`-driven prompt assembly; the built-in tools always
-   * run regardless.
    */
   tools?: Tool[];
   /** Optional observability hooks (see Hook). */
   hooks?: Hook[];
+  /**
+   * Optional agent-loop config. When set, the agent uses the multi-
+   * step dispatch loop (Phase 3.3). Per-turn override via
+   * `AgentRunParams.agentLoop`.
+   */
+  agentLoop?: AgentLoopConfig;
+  /**
+   * Optional history-compaction config. When set, the agent uses
+   * the HistoryCompactor (Phase 3.2). Per-turn override via
+   * `AgentRunParams.historyCompaction`.
+   */
+  historyCompaction?: HistoryCompactionConfig;
 }

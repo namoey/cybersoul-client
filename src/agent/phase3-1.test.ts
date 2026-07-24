@@ -44,6 +44,11 @@ const assert = {
 class MockClient {
   capturedInteractParams: InteractParams | null = null;
   capturedProactiveParams: ProactiveParams | null = null;
+  // Stub LLM with chat() so the agent's tooling-support assertion passes.
+  llm = {
+    generate: async () => "{}",
+    chat: async () => ({ textResponse: "", toolCalls: [] }),
+  };
 
   async interact(params: InteractParams): Promise<InteractResponse> {
     this.capturedInteractParams = params;

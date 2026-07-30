@@ -515,15 +515,13 @@ export class AgentHarness {
         break;
       }
 
-      // Check if the model called "speak" — if so, the character has
-      // replied. Dispatch all tool calls from this iteration, then
-      // TERMINATE the loop. The character's reply is complete; there
-      // is no reason to iterate further. Without this, the model tends
-      // to repeat the same speak call in the next iteration because it
-      // sees the speak tool result and thinks "I should reply again."
-      const calledSpeak = result.toolCalls.some(
-        (c) => c.name === "speak" || c.name === "skip_turn",
-      );
+      // The loop runs until the LLM stops calling tools (natural
+      // completion above) or hits a safety cap (below). We do NOT
+      // break early after speak — the LLM is free to call speak,
+      // then generate_image, then update_state across multiple
+      // iterations, finishing only when it has nothing left to do.
+      // The textReadyEmitted guard prevents duplicate text bubbles
+      // from a second speak call.
 
       // Dispatch tools for THIS iteration (below). Set termination if
       // speak was called so we break after dispatching.
@@ -671,34 +669,8 @@ export class AgentHarness {
         totalChars += resultStr.length;
       }
 
-      // If speak (or skip_turn) was called this iteration AND
-      // generate_image was also called, the turn is complete —
-      // terminate the loop.
-      //
-      // generate_voice does NOT count as "completing media" here:
-      // voice is just the audio delivery of the speak text, not a
-      // media action the LLM might need another iteration for. So
-      // if the LLM calls speak + generate_voice but NOT
-      // generate_image (e.g. the character says "I'll send a photo"
-      // via voice), the loop continues to let the LLM dispatch
-      // generate_image in the next iteration.
-      //
-      // If speak was called WITHOUT generate_image, DON'T terminate —
-      // let the loop continue so the LLM can dispatch media in the
-      // next iteration (e.g. "I'll send a photo" → generate_image).
-      // The textReadyEmitted guard prevents duplicate text bubbles
-      // if the model calls speak again. The loop will terminate via
-      // "no-tool-calls" when the model has nothing left to call.
-      if (calledSpeak) {
-        const calledImage = result.toolCalls.some(
-          (c) => c.name === "generate_image",
-        );
-        if (calledImage) {
-          termination = "no-tool-calls";
-          break;
-        }
-        // speak without image — continue to next iteration.
-      }
+      // The loop continues — the LLM decides when it's done by
+      // returning no tool calls. No early break after speak.
 
       // If this was the last allowed iteration, terminate with the cap.
       if (iter === maxIterations) {

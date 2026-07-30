@@ -379,14 +379,12 @@ export class CyberSoulClient {
             : detected.toolCalling;
 
       const streaming =
-        explicitStreaming === false
-          ? false
-          : explicitStreaming === true
-            ? (detected.streaming && supportsStreaming(this.llm)) ||
-              (console.warn(
-                "[CyberSoulClient] capabilities.streaming=true but the backend LLM template does not support streaming. Falling back to the non-streaming path.",
-              ), false)
-            : detected.streaming && supportsStreaming(this.llm);
+        explicitStreaming === true
+          ? (detected.streaming && supportsStreaming(this.llm)) ||
+            (console.warn(
+              "[CyberSoulClient] capabilities.streaming=true but the backend LLM template does not support streaming. Falling back to the non-streaming path.",
+            ), false)
+          : false;
 
       this.resolvedCapabilities = { toolCalling, streaming };
       return this.resolvedCapabilities;

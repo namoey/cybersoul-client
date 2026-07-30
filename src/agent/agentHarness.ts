@@ -471,6 +471,11 @@ export class AgentHarness {
     // Track which side-effect tools the loop already executed so the
     // client can skip re-running them.
     const loopDispatchedTools = new Set<string>();
+    // Track whether text-ready has been emitted so a second speak
+    // call (in a subsequent iteration) doesn't create a duplicate
+    // text bubble. The first speak emits text-ready; subsequent
+    // speak calls only update the folded intent's textResponse.
+    let textReadyEmitted = false;
     let totalChars = conversation.reduce(
       (sum, m) => sum + (m.content?.length ?? 0),
       0,
@@ -567,9 +572,6 @@ export class AgentHarness {
       const hasVoiceInIteration = result.toolCalls.some(
         (c) => c.name === "generate_voice",
       );
-      const hasImageInIteration = result.toolCalls.some(
-        (c) => c.name === "generate_image",
-      );
 
       // Dispatch each tool call via the registry. Run them
       // concurrently — most tools are independent within one
@@ -597,7 +599,12 @@ export class AgentHarness {
             // Set willGenerateVoice when generate_voice is also called
             // in this iteration — the UI uses this to suppress the
             // early text bubble and show only the voice bubble.
-            if (call.name === "speak") {
+            //
+            // Suppress text-ready for the SECOND speak call in the
+            // same loop (textReadyEmitted guard) — the first speak
+            // already rendered the bubble.
+            if (call.name === "speak" && !textReadyEmitted) {
+              textReadyEmitted = true;
               this.sink.emit({
                 type: "text-ready",
                 text: args.text || "",
@@ -664,13 +671,29 @@ export class AgentHarness {
         totalChars += resultStr.length;
       }
 
-      // If speak (or skip_turn) was called this iteration, the
-      // character's reply is complete. Terminate the loop — do NOT
-      // feed the results back for another iteration. The model would
-      // just repeat the same speak call or output duplicate text.
+      // If speak (or skip_turn) was called this iteration AND media
+      // tools (generate_image/generate_voice) were also called, the
+      // turn is complete — terminate the loop.
+      //
+      // If speak was called WITHOUT media tools, DON'T terminate —
+      // let the loop continue so the LLM can dispatch media in the
+      // next iteration (e.g. "I'll send a photo" → generate_image).
+      // The textReadyEmitted guard prevents duplicate text bubbles
+      // if the model calls speak again. The loop will terminate via
+      // "no-tool-calls" when the model has nothing left to call.
       if (calledSpeak) {
-        termination = "no-tool-calls";
-        break;
+        const calledMedia = result.toolCalls.some(
+          (c) =>
+            c.name === "generate_image" ||
+            c.name === "generate_voice",
+        );
+        if (calledMedia) {
+          termination = "no-tool-calls";
+          break;
+        }
+        // speak without media — continue to next iteration.
+        // The model sees the speak tool result and can now call
+        // generate_image/generate_voice if it intended to send media.
       }
 
       // If this was the last allowed iteration, terminate with the cap.

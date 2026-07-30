@@ -671,29 +671,33 @@ export class AgentHarness {
         totalChars += resultStr.length;
       }
 
-      // If speak (or skip_turn) was called this iteration AND media
-      // tools (generate_image/generate_voice) were also called, the
-      // turn is complete — terminate the loop.
+      // If speak (or skip_turn) was called this iteration AND
+      // generate_image was also called, the turn is complete —
+      // terminate the loop.
       //
-      // If speak was called WITHOUT media tools, DON'T terminate —
+      // generate_voice does NOT count as "completing media" here:
+      // voice is just the audio delivery of the speak text, not a
+      // media action the LLM might need another iteration for. So
+      // if the LLM calls speak + generate_voice but NOT
+      // generate_image (e.g. the character says "I'll send a photo"
+      // via voice), the loop continues to let the LLM dispatch
+      // generate_image in the next iteration.
+      //
+      // If speak was called WITHOUT generate_image, DON'T terminate —
       // let the loop continue so the LLM can dispatch media in the
       // next iteration (e.g. "I'll send a photo" → generate_image).
       // The textReadyEmitted guard prevents duplicate text bubbles
       // if the model calls speak again. The loop will terminate via
       // "no-tool-calls" when the model has nothing left to call.
       if (calledSpeak) {
-        const calledMedia = result.toolCalls.some(
-          (c) =>
-            c.name === "generate_image" ||
-            c.name === "generate_voice",
+        const calledImage = result.toolCalls.some(
+          (c) => c.name === "generate_image",
         );
-        if (calledMedia) {
+        if (calledImage) {
           termination = "no-tool-calls";
           break;
         }
-        // speak without media — continue to next iteration.
-        // The model sees the speak tool result and can now call
-        // generate_image/generate_voice if it intended to send media.
+        // speak without image — continue to next iteration.
       }
 
       // If this was the last allowed iteration, terminate with the cap.

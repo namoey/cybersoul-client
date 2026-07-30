@@ -592,6 +592,14 @@ export interface CharacterState {
   next_event?: any;
   active_wardrobe?: any;
   core_memory?: CoreMemory;
+  /**
+   * Recent conversation-session summaries (story moments). Populated by
+   * `ContextManager` from `GET /characters/moments` — NOT returned by
+   * `GET /state` itself. Injected into the system prompt as
+   * `[RECENT MOMENTS]` so the character recalls prior conversations in
+   * detail, not just the limited key events in `core_memory`.
+   */
+  recent_moments?: MomentSummary[];
   dynamic_context?: {
     temperature?: number;
     userNickname?: string;
@@ -739,6 +747,15 @@ export interface LLMChatResult {
   textResponse: string;
   /** Tool calls parsed from the response, if any. Empty array when absent. */
   toolCalls: LLMToolCall[];
+  /**
+   * Optional reasoning content from thinking-mode models (e.g.
+   * DeepSeek-V4 with reasoning_effort). When present, the multi-step
+   * loop MUST pass it back on the assistant message in subsequent
+   * iterations — DeepSeek returns 400 if it's missing.
+   *
+   * Empty string when the model doesn't use thinking mode.
+   */
+  reasoningContent?: string;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -957,4 +974,19 @@ export interface LikedPicture {
   url: string;
   date: string;
   mediaId?: string;
+}
+
+/**
+ * A saved story moment — the first-person narrative summary of one
+ * conversation session. Saved by `saveMoment()` after an `end_turn`,
+ * fetched back via `getMoments()`, and injected into the system prompt
+ * as `[RECENT MOMENTS]` so the character can recall prior conversations
+ * in detail (beyond the limited key points in `CoreMemory`).
+ */
+export interface MomentSummary {
+  id?: string;
+  date: string;
+  time: string;
+  summary: string;
+  likedPictures?: LikedPicture[];
 }

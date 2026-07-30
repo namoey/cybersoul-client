@@ -18,7 +18,7 @@ import {
   PersistedDynamicContext,
   SupportedLLMModel,
 } from "./types.js";
-import { supportsStreaming } from "./types.js";
+import { supportsStreaming, supportsToolCalling } from "./types.js";
 import { robustJsonParse } from "./utils/json.utils.js";
 import { GenericLLMProvider } from "./llm.provider.js";
 import { CyberSoulError } from "./errors.js";
@@ -115,6 +115,22 @@ export class CyberSoulClient {
    */
   private historyCompactor: HistoryCompactor | null = null;
   private historyCompactorConfig: HistoryCompactionConfig | null = null;
+
+  /**
+   * Phase 5 — resolved LLM dispatch capabilities. Populated on first
+   * use by `resolveCapabilities()`, reused thereafter. Merges the
+   * caller's explicit `capabilities` flags with auto-detection from
+   * the backend LLM template. `null` = not yet resolved.
+   */
+  private resolvedCapabilities: { toolCalling: boolean; streaming: boolean } | null = null;
+
+  /**
+   * Phase 5 — in-flight capability resolution promise. When set,
+   * concurrent `resolveCapabilities()` calls return this same promise
+   * instead of racing to fetch the template. Prevents a double-fetch
+   * on the first concurrent pair of interact() calls.
+   */
+  private capabilitiesPromise: Promise<{ toolCalling: boolean; streaming: boolean }> | null = null;
 
   /* ==================== Constructor ==================== */
 
@@ -310,43 +326,113 @@ export class CyberSoulClient {
   }
 
   /**
-   * Phase 2 dispatch-path selector. Returns true when the caller has
-   * explicitly opted into native tool-calling via
-   * `llmConfig.capabilities.toolCalling === true`. Default is false —
-   * the Phase 1 JSON-dispatcher path — so existing consumers are
-   * unchanged (§5.3 zero-diff for the default path).
+   * Phase 5 — resolve the effective LLM dispatch capabilities by
+   * merging the caller's explicit flags with auto-detection from the
+   * backend LLM template.
    *
-   * This is intentionally a strict `=== true` check, not truthy: a
-   * caller who sets `toolCalling: false` is explicitly pinning to the
-   * JSON-dispatcher path (useful for A/B comparison during shadow
-   * mode rollout per §5.5), and that must not be overridden by any
-   * future auto-detection logic.
+   * Resolution rules per capability (toolCalling / streaming):
+   *   - Explicit `true`  → check template; if supported, use it. If
+   *     the template doesn't support it, log a warning and fall back
+   *     to false (the classic path). The caller asked for it but the
+   *     model can't do it.
+   *   - Explicit `false` → false. The caller is pinning to the
+   *     classic path (A/B testing, known limitations, etc.).
+   *   - Undefined       → auto-detect from the backend template.
+   *     Modern models (DeepSeek, GPT-4o) with configured templates
+   *     get the agent path; traditional models get the classic path.
    *
-   * Auto-detection from the backend template
-   * (`listSupportedLLMs` projecting `toolCallsResponsePath` presence)
-   * is a planned Phase 2.1 follow-up; for now the flag is explicit.
+   * The result is cached on the instance so the template is only
+   * fetched once per client. MUST be called (and awaited) before any
+   * `shouldUseToolCalling()` / `shouldUseStreaming()` call in the
+   * same turn — typically at the top of `interact()` /
+   * `proactiveInteract()` / `ondemandEvent()`.
    */
-  private shouldUseToolCalling(): boolean {
-    return this.config.llmConfig.capabilities?.toolCalling === true;
+  private async resolveCapabilities(): Promise<{ toolCalling: boolean; streaming: boolean }> {
+    // Fast path — already resolved.
+    if (this.resolvedCapabilities) return this.resolvedCapabilities;
+
+    // Dedupe — if a resolution is already in flight, return the same
+    // promise so concurrent callers don't race to fetch the template.
+    if (this.capabilitiesPromise) return this.capabilitiesPromise;
+
+    this.capabilitiesPromise = (async () => {
+      // Fetch the template-derived capabilities (cached in the provider).
+      // Gracefully degrades to all-false on any fetch error.
+      const detected = this.llm instanceof GenericLLMProvider
+        ? await this.llm.detectCapabilities()
+        : { toolCalling: supportsToolCalling(this.llm), streaming: supportsStreaming(this.llm) };
+
+      const explicitToolCalling = this.config.llmConfig.capabilities?.toolCalling;
+      const explicitStreaming = this.config.llmConfig.capabilities?.streaming;
+
+      // Merge: explicit false always wins (pin to classic). Explicit true
+      // requires template support (warn + fall back if template says no).
+      // Undefined → trust the template detection.
+      const toolCalling =
+        explicitToolCalling === false
+          ? false
+          : explicitToolCalling === true
+            ? detected.toolCalling ||
+              (console.warn(
+                "[CyberSoulClient] capabilities.toolCalling=true but the backend LLM template does not support tool-calling. Falling back to the classic JSON-dispatcher path.",
+              ), false)
+            : detected.toolCalling;
+
+      const streaming =
+        explicitStreaming === false
+          ? false
+          : explicitStreaming === true
+            ? (detected.streaming && supportsStreaming(this.llm)) ||
+              (console.warn(
+                "[CyberSoulClient] capabilities.streaming=true but the backend LLM template does not support streaming. Falling back to the non-streaming path.",
+              ), false)
+            : detected.streaming && supportsStreaming(this.llm);
+
+      this.resolvedCapabilities = { toolCalling, streaming };
+      return this.resolvedCapabilities;
+    })();
+
+    try {
+      return await this.capabilitiesPromise;
+    } finally {
+      // Clear the in-flight marker so future calls (after a potential
+      // reset) can re-resolve. The cached result in resolvedCapabilities
+      // will short-circuit them anyway.
+      this.capabilitiesPromise = null;
+    }
   }
 
   /**
-   * Phase 4 — streaming selector. Returns true when the caller has
-   * explicitly opted into streaming via `llmConfig.capabilities.
-   * streaming === true` AND the provider implements `chatStream()`.
-   * Default is false — the non-streaming dispatch path.
+   * Phase 5 — returns the resolved tool-calling capability. MUST be
+   * preceded by an `await this.resolveCapabilities()` call in the
+   * same turn (the interact/proactive/ondemand entry points do this).
    *
-   * Streaming takes PRIORITY over tool-calling in the dispatch
-   * selection: streaming + tool-calling both use provider.chat()
-   * under the hood, but streaming's value (text deltas for perceived
-   * latency) is higher-impact than tool-calling's value (eliminating
-   * malformed JSON). When both are on, streaming wins and tool-
-   * calling's benefits are deferred until the streaming + tool-call
-   * path is built (Phase 4.1).
+   * Uses the cached resolution from `resolveCapabilities()` — no
+   * async work here so it can be called synchronously mid-dispatch.
+   */
+  private shouldUseToolCalling(): boolean {
+    return this.resolvedCapabilities?.toolCalling === true;
+  }
+
+  /**
+   * Phase 5 — returns the resolved streaming capability. Same
+   * contract as `shouldUseToolCalling()`: `resolveCapabilities()`
+   * must have been awaited earlier in the turn.
+   *
+   * IMPORTANT: streaming is gated on tool-calling being active too.
+   * The streaming dispatch path (`runInteractDispatchStream`) sends
+   * tool declarations to the model. If tool-calling is NOT active
+   * (classic JSON-dispatcher path), streaming would silently drop
+   * the tools — the model would produce freeform text with no
+   * speak/update_state/image/voice dispatch. So streaming is only
+   * useful when tool-calling is also on. Streaming-without-tools is
+   * a valid config for future text-only streaming UIs, but the agent
+   * harness doesn't support it today.
    */
   private shouldUseStreaming(): boolean {
     return (
-      this.config.llmConfig.capabilities?.streaming === true &&
+      this.shouldUseToolCalling() &&
+      this.resolvedCapabilities?.streaming === true &&
       supportsStreaming(this.llm)
     );
   }
@@ -412,7 +498,13 @@ export class CyberSoulClient {
       requestedOthers,
       allowSkip: params.allowSkip === true,
       systemPromptFragment: params.systemPromptFragment,
-      embedJsonSchemaHint: params.embedJsonSchemaHint,
+      // Phase 5 — the JSON schema hint is REQUIRED on the classic
+      // JSON-dispatcher path (the LLM has no tool declarations, so it
+      // MUST see the schema to produce valid JSON). It's OMITTED on
+      // the tool-calling path (native tool declarations replace it).
+      // Default: false when tool-calling (omit), true when classic.
+      embedJsonSchemaHint:
+        this.shouldUseToolCalling() ? (params.embedJsonSchemaHint ?? false) : true,
     });
 
     // Phase 3.2 — use the configured HistoryCompactor when enabled,
@@ -453,7 +545,10 @@ export class CyberSoulClient {
       !!parsedIntent.imageParams || !!parsedIntent.voiceArgs;
     if (!finalHasUsableText && !finalHasMediaIntent) {
       throw new Error(
-        "LLM returned a non-actionable response after retries (no usable textResponse and no media intent). Check LLM template/provider alignment.",
+        "LLM returned a non-actionable response (no usable textResponse and no media intent). " +
+          "This can happen when: (1) the classic JSON-dispatcher path failed to parse the LLM's JSON after 3 retries, " +
+          "(2) the agent loop hit maxIterations without the model ever calling speak/generate_image/generate_voice, or " +
+          "(3) the LLM template/provider is misconfigured. Check LLM template/provider alignment.",
       );
     }
   }
@@ -511,7 +606,11 @@ export class CyberSoulClient {
       availableOutfits,
       imageAllowed,
       systemPromptFragment: params.systemPromptFragment,
-      embedJsonSchemaHint: params.embedJsonSchemaHint,
+      // Phase 5 — same gate as interact: omit the JSON schema hint
+      // when tool-calling is active (native tool declarations replace
+      // it); force it on for the classic path.
+      embedJsonSchemaHint:
+        this.shouldUseToolCalling() ? (params.embedJsonSchemaHint ?? false) : true,
     });
 
     // Phase 3.2 — same compaction-aware transcript build as interact.
@@ -600,6 +699,13 @@ export class CyberSoulClient {
 
   public async interact(params: InteractParams): Promise<InteractResponse> {
     try {
+      // 0. Phase 5 — resolve LLM dispatch capabilities (auto-detect
+      //    from backend template, merged with explicit flags). MUST
+      //    happen before buildInteractPromptMessages because the
+      //    result drives `embedJsonSchemaHint` (tool-calling path
+      //    omits the JSON schema; classic path includes it).
+      await this.resolveCapabilities();
+
       // 1. Prepare context (state + wardrobe + normalized types).
       const ctx = await this.context.prepareInteract(params);
 
@@ -631,10 +737,8 @@ export class CyberSoulClient {
       const useToolCalling = this.shouldUseToolCalling();
       const loopConfig = this.resolveAgentLoopConfig(params.agentLoop);
       let parsedIntent: DispatcherIntent;
+      let loopDispatchedTools: Set<string> | undefined;
       if (useStreaming) {
-        // Phase 4 — streaming text deltas. Tool declarations are
-        // passed but today's streaming path doesn't use the loop;
-        // Phase 4.1 will combine streaming + multi-step.
         const registry = this.buildTurnToolRegistry(sink, params.extraTools);
         const declarations = registry.buildToolDeclarations();
         ({ parsedIntent } = await harness.runInteractDispatchStream(
@@ -646,14 +750,17 @@ export class CyberSoulClient {
         const declarations = registry.buildToolDeclarations();
         const toolCtx = this.buildToolContext(ctx.state, params);
         if (loopConfig) {
-          // Phase 3.3 — multi-step agent loop.
-          ({ parsedIntent } = await harness.runInteractDispatchLoop(
-            promptMessages,
-            declarations,
-            registry,
-            toolCtx,
-            loopConfig,
-          ));
+          // Phase 3.3 — multi-step agent loop. The loop dispatches
+          // side-effect tools inline (image, voice, etc.) and tracks
+          // which ones ran so the side-effect layer skips them.
+          ({ parsedIntent, loopDispatchedTools } =
+            await harness.runInteractDispatchLoop(
+              promptMessages,
+              declarations,
+              registry,
+              toolCtx,
+              loopConfig,
+            ));
         } else {
           ({ parsedIntent } = await harness.runInteractDispatchWithTools(
             promptMessages,
@@ -684,12 +791,33 @@ export class CyberSoulClient {
 
       // 7. State PATCH in parallel with everything else. `onStateReady`
       //    is wired inside the harness via the EventStream.
-      const persistedStatePromise = harness.startInteractStateUpdate(
-        parsedIntent,
-        toolCtx,
-      );
+      //    When the loop already dispatched update_state inline, skip
+      //    the re-PATCH (the tool already did it). But still fire
+      //    onStateReady with {} so the UI's generic "LLM phase done"
+      //    signal fires.
+      let persistedStatePromise: Promise<PersistedDynamicContext | null>;
+      if (loopDispatchedTools?.has("update_state")) {
+        // State was already PATCHed by the loop's update_state tool.
+        // Fire onStateReady with empty so the callback signal works.
+        persistedStatePromise = Promise.resolve(null);
+        if (params.onStateReady) {
+          try {
+            params.onStateReady({});
+          } catch (cbErr) {
+            console.warn("[CyberSoulClient] onStateReady callback threw:", cbErr);
+          }
+        }
+      } else {
+        persistedStatePromise = harness.startInteractStateUpdate(
+          parsedIntent,
+          toolCtx,
+        );
+      }
 
       // 8. Resolve text + emit text-ready with the legacy gating.
+      //    SKIP if the loop already emitted text-ready when it
+      //    dispatched the speak tool inline — otherwise the panel
+      //    gets two text-ready events and renders duplicate bubbles.
       const resolvedTextResponse = this.resolveInteractText(
         parsedIntent,
         params.userMessage,
@@ -698,12 +826,14 @@ export class CyberSoulClient {
         ctx.types.includes(InteractRequestType.VOICE) &&
         (!ctx.isAuto || !!parsedIntent.voiceArgs);
 
-      this.emitInteractTextReady(
-        sink,
-        parsedIntent,
-        resolvedTextResponse,
-        willGenerateVoice,
-      );
+      if (!loopDispatchedTools?.has("speak")) {
+        this.emitInteractTextReady(
+          sink,
+          parsedIntent,
+          resolvedTextResponse,
+          willGenerateVoice,
+        );
+      }
 
       // 9. Parallel side-effects (image/voice/event/gift). Failures of
       //    typed-media errors are captured in-band; everything else is
@@ -714,6 +844,7 @@ export class CyberSoulClient {
         params,
         resolvedTextResponse,
         toolCtx,
+        loopDispatchedTools,
       );
 
       const persistedDynamicContext =
@@ -771,6 +902,9 @@ export class CyberSoulClient {
     params: OndemandEventParams,
   ): Promise<OndemandEventResponse> {
     try {
+      // 0. Phase 5 — resolve LLM dispatch capabilities (auto-detect).
+      await this.resolveCapabilities();
+
       // 1. Fetch current state and wardrobe items
       const [state, availableOutfits] = await Promise.all([
         this.context.fetchState(),
@@ -850,6 +984,10 @@ export class CyberSoulClient {
           reason: `Spam guard: ${consecutiveProactive} consecutive un-replied turns already sent.`,
         };
       }
+
+      // 1b. Phase 5 — resolve LLM dispatch capabilities (auto-detect).
+      //     Must happen before prompt building (embedJsonSchemaHint gate).
+      await this.resolveCapabilities();
 
       // 2. Prepare context (state + wardrobe + modality gates).
       const ctx = await this.context.prepareProactive(params);
@@ -1152,6 +1290,9 @@ export class CyberSoulClient {
     likedPictures?: LikedPicture[],
   ): Promise<void> {
     await this.api.saveMoment({ summary, date, time, likedPictures });
+    // Invalidate the moments cache so the next turn sees the newly
+    // saved moment instead of the stale 5-min-cached list.
+    this.context.invalidateMomentsCache();
   }
 
   /**
@@ -1183,6 +1324,11 @@ export class CyberSoulClient {
 
       const parsedPayload = await this.dispatchConsolidationLLM(promptMessages);
       await this.api.updateCoreMemory(parsedPayload);
+
+      // Invalidate the moments cache — core-memory consolidation is
+      // triggered by the same end_turn flow that saves a new moment,
+      // so the cache is likely stale at this point.
+      this.context.invalidateMomentsCache();
 
       return {
         status: "success",

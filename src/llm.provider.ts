@@ -25,8 +25,8 @@ import {
  * use, and Anthropic has an OpenAI-compat endpoint that accepts it.
  */
 export function normalizeMessagesForProvider(
-  messages: Array<LLMConversationMessage | { role: string; content: string }>,
-): Array<{ role: string; content: string; tool_call_id?: string }> {
+  messages: Array<LLMConversationMessage | { role: string; content: string; [key: string]: unknown }>,
+): Array<Record<string, unknown>> {
   return messages.map((m) => {
     if (m.role === "tool") {
       const tool = m as Extract<LLMConversationMessage, { role: "tool" }>;
@@ -36,8 +36,88 @@ export function normalizeMessagesForProvider(
         tool_call_id: tool.toolCallId,
       };
     }
-    return { role: m.role, content: m.content };
+    // Pass through any extra fields on assistant messages (e.g.
+    // tool_calls, reasoning_content) so the provider can correlate
+    // tool results and continue thinking-mode reasoning.
+    const out: Record<string, unknown> = { role: m.role, content: m.content };
+    if ((m as any).tool_calls) {
+      out.tool_calls = (m as any).tool_calls;
+    }
+    if ((m as any).reasoning_content) {
+      out.reasoning_content = (m as any).reasoning_content;
+    }
+    return out;
   });
+}
+
+/**
+ * Transform the SDK's canonical LLMToolDeclaration[] into the
+ * OpenAI-compatible tool format that most providers expect:
+ *
+ *   SDK canonical:  { name, description, inputSchema }
+ *   OpenAI format:  { type: "function", function: { name, description, parameters } }
+ *
+ * Without this transformation, DeepSeek/OpenAI/MiniMax return 400
+ * Bad Request because the `tools` array doesn't match their expected
+ * schema (missing `type: "function"` wrapper, wrong key name
+ * `inputSchema` vs `parameters`).
+ *
+ * Exported so custom providers can reuse the same transformation.
+ */
+export function toOpenAiToolFormat(
+  tools: LLMToolDeclaration[],
+): Array<{
+  type: "function";
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
+}> {
+  return tools.map((t) => ({
+    type: "function",
+    function: {
+      name: t.name,
+      description: t.description,
+      parameters: t.inputSchema,
+    },
+  }));
+}
+
+/**
+ * Phase 2.1.1 — extract a human-readable error message from a
+ * provider's error response body. Handles the three common shapes:
+ *
+ *   OpenAI/DeepSeek: { error: { message: "..." } }
+ *   Anthropic:       { error: { message: "..." } }
+ *   Flat:            { message: "..." } or { error: "..." }
+ *
+ * Returns a string; falls back to "HTTP {status}" when nothing
+ * useful is found. Without this, `String(body.error)` produces
+ * "[object Object]" when the error field is an object.
+ */
+function extractProviderError(body: unknown, status: number): string {
+
+  if (!body || typeof body !== 'object') return `HTTP ${status}`;
+  const obj = body as Record<string, unknown>;
+
+  // { error: { message: "..." } }
+  if (obj.error && typeof obj.error === 'object') {
+    const errObj = obj.error as Record<string, unknown>;
+    if (typeof errObj.message === 'string') return errObj.message;
+    if (typeof errObj.type === 'string') return errObj.type;
+    return JSON.stringify(errObj);
+  }
+
+  // { error: "string message" }
+  if (typeof obj.error === 'string') return obj.error;
+
+  // { message: "..." }
+  if (typeof obj.message === 'string') return obj.message;
+
+  // Fallback — stringify the whole thing (truncated for readability)
+  const str = JSON.stringify(body);
+  return str.length > 200 ? str.slice(0, 197) + '...' : str;
 }
 
 /**
@@ -74,6 +154,13 @@ function wrapLlmFetchError(
 
 export class GenericLLMProvider implements BaseLLMProvider {
   private static templateCache = new Map<string, any>();
+
+  /**
+   * Phase 5 — cached capability detection result. Populated on first
+   * `detectCapabilities()` call, reused thereafter so the template
+   * is only fetched once per provider instance.
+   */
+  private cachedCapabilities: { toolCalling: boolean; streaming: boolean } | null = null;
 
   constructor(
     private config: GenericLLMConfig,
@@ -120,10 +207,7 @@ export class GenericLLMProvider implements BaseLLMProvider {
     if (!resp.ok) {
       let body: unknown;
       try { body = await resp.json(); } catch { body = undefined; }
-      const detail =
-        body && typeof body === 'object' && 'error' in body
-          ? String((body as { error: unknown }).error)
-          : `HTTP ${resp.status}`;
+      const detail = extractProviderError(body, resp.status);
       throw new CyberSoulLlmTemplateError(
         '/api/v1/cyber-soul/llm-models/template',
         'GET',
@@ -138,6 +222,42 @@ export class GenericLLMProvider implements BaseLLMProvider {
     const template = await resp.json();
     GenericLLMProvider.templateCache.set(cacheKey, template);
     return template;
+  }
+
+  /**
+   * Phase 5 — dynamic capability detection. Fetches the backend LLM
+   * template (cached) and resolves which dispatch features this
+   * provider/model combination actually supports:
+   *
+   *   - `toolCalling`: template has `toolsPayloadTemplate` +
+   *     `toolCallsResponsePath` + `toolCallArgsResponsePath` → the
+   *     agent/tool-calling path is available.
+   *   - `streaming`: template has `streamMode === "sse"` +
+   *     `streamDeltaPath` → streaming text deltas are available.
+   *
+   * This lets the SDK AUTO-ROUTE: modern models (DeepSeek, GPT-4o,
+   * Claude) with configured templates use the agent path; traditional
+   * models (MiniMax abab, older models without tool-call fields) use
+   * the classic JSON-dispatcher path. Callers no longer need to set
+   * `capabilities.toolCalling` manually.
+   *
+   * The result is cached per-instance so repeated calls are free.
+   * Failures (template fetch error, etc.) return all-false → the SDK
+   * safely falls back to the classic path rather than crashing.
+   */
+  async detectCapabilities(): Promise<{ toolCalling: boolean; streaming: boolean }> {
+    if (this.cachedCapabilities) return this.cachedCapabilities;
+    try {
+      const template = await this.fetchTemplate();
+      this.cachedCapabilities = {
+        toolCalling: this.templateSupportsToolCalling(template),
+        streaming: this.templateStreamSupported(template),
+      };
+    } catch {
+      // Template fetch failure → assume classic path (safe default).
+      this.cachedCapabilities = { toolCalling: false, streaming: false };
+    }
+    return this.cachedCapabilities;
   }
 
   private extractResponse(data: any, responsePath: string): string {
@@ -320,12 +440,7 @@ export class GenericLLMProvider implements BaseLLMProvider {
       // surface the provider's own error message in the typed throw.
       let body: unknown;
       try { body = await response.json(); } catch { body = undefined; }
-      const providerMsg =
-        body && typeof body === 'object' && 'error' in body
-          ? String((body as { error: unknown }).error)
-          : body && typeof body === 'object' && 'message' in body
-            ? String((body as { message: unknown }).message)
-            : `HTTP ${response.status}`;
+      const providerMsg = extractProviderError(body, response.status);
 
       if (response.status === 401 || response.status === 403) {
         throw new CyberSoulLlmAuthError(
@@ -464,24 +579,21 @@ export class GenericLLMProvider implements BaseLLMProvider {
     }
 
     // Inject the tool declarations per the template's instructions.
-    // The template author chooses how tools appear in the provider's
-    // request format — `{{tools}}` is the placeholder. Some providers
-    // want the tools inline; some want them JSON-stringified. The
-    // template's `toolsPayloadTemplate` object is merged onto the
-    // payload with the placeholder resolved.
+    // Transform to OpenAI-compatible format first — DeepSeek/OpenAI/
+    // MiniMax all expect { type: "function", function: { name, description,
+    // parameters } }, not the SDK's canonical { name, description, inputSchema }.
+    const openAiTools = toOpenAiToolFormat(params.tools);
     const toolsTemplate = template.toolsPayloadTemplate as Record<string, unknown>;
     for (const [key, value] of Object.entries(toolsTemplate)) {
-      if (typeof value === 'string' && value.includes('{{tools}}')) {
-        // Replace the placeholder inline (preserves any wrapper structure
-        // the template specified around `{{tools}}`).
-        payload[key] = value.replace('{{tools}}', JSON.stringify(params.tools));
-      } else if (value === '{{tools}}') {
+      if (value === '{{tools}}') {
         // Bare placeholder — inject the array directly so the provider
         // receives it as a real JSON array, not a stringified one.
-        payload[key] = params.tools;
+        payload[key] = openAiTools;
+      } else if (typeof value === 'string' && value.includes('{{tools}}')) {
+        // Inline placeholder within a larger string (e.g. "prefix{{tools}}suffix").
+        // Stringify because the surrounding string context requires it.
+        payload[key] = value.replace('{{tools}}', JSON.stringify(openAiTools));
       } else {
-        // Static value the template wants shipped verbatim (e.g.
-        // `tool_choice: { type: "auto" }`). Copy through.
         payload[key] = value;
       }
     }
@@ -505,12 +617,7 @@ export class GenericLLMProvider implements BaseLLMProvider {
       // the call origin matters in logs.
       let body: unknown;
       try { body = await response.json(); } catch { body = undefined; }
-      const providerMsg =
-        body && typeof body === 'object' && 'error' in body
-          ? String((body as { error: unknown }).error)
-          : body && typeof body === 'object' && 'message' in body
-            ? String((body as { message: unknown }).message)
-            : `HTTP ${response.status}`;
+      const providerMsg = extractProviderError(body, response.status);
 
       if (response.status === 401 || response.status === 403) {
         throw new CyberSoulLlmAuthError(
@@ -597,7 +704,13 @@ export class GenericLLMProvider implements BaseLLMProvider {
       template.toolCallArgsResponsePath,
     );
 
-    return { textResponse, toolCalls };
+    // Extract reasoning_content from thinking-mode models (DeepSeek-V4).
+    // When present, the multi-step loop MUST pass it back on the
+    // assistant message — DeepSeek returns 400 if it's missing.
+    const reasoningContent =
+      this.resolvePath(data, 'choices.0.message.reasoning_content') as string ?? '';
+
+    return { textResponse, toolCalls, reasoningContent };
   }
 
   /**
@@ -660,14 +773,17 @@ export class GenericLLMProvider implements BaseLLMProvider {
     if (!payload.messages || (Array.isArray(payload.messages) && payload.messages.length === 0)) {
       payload.messages = normalizeMessagesForProvider(params.messages);
     }
-    // Inject tools (same as chat()).
+    // Inject tools (same as chat() — transform to OpenAI format first).
     if (template.toolsPayloadTemplate) {
+      const openAiTools = toOpenAiToolFormat(params.tools);
       const toolsTemplate = template.toolsPayloadTemplate as Record<string, unknown>;
       for (const [key, value] of Object.entries(toolsTemplate)) {
-        if (typeof value === 'string' && value.includes('{{tools}}')) {
-          payload[key] = value.replace('{{tools}}', JSON.stringify(params.tools));
-        } else if (value === '{{tools}}') {
-          payload[key] = params.tools;
+        if (value === '{{tools}}') {
+          // Bare placeholder — inject the array directly.
+          payload[key] = openAiTools;
+        } else if (typeof value === 'string' && value.includes('{{tools}}')) {
+          // Inline placeholder within a larger string.
+          payload[key] = value.replace('{{tools}}', JSON.stringify(openAiTools));
         } else {
           payload[key] = value;
         }
@@ -691,10 +807,7 @@ export class GenericLLMProvider implements BaseLLMProvider {
     if (!response.ok) {
       let body: unknown;
       try { body = await response.json(); } catch { body = undefined; }
-      const providerMsg =
-        body && typeof body === 'object' && 'error' in body
-          ? String((body as { error: unknown }).error)
-          : `HTTP ${response.status}`;
+      const providerMsg = extractProviderError(body, response.status);
       if (response.status === 401 || response.status === 403) {
         throw new CyberSoulLlmAuthError(
           this.config.provider,

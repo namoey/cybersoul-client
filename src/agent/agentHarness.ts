@@ -83,6 +83,18 @@ const MAX_DISPATCH_ATTEMPTS = 3;
  */
 export interface DispatchResult {
   parsedIntent: DispatcherIntent;
+  /**
+   * Phase 3.3.1 — when the multi-step loop ran and dispatched media
+   * tools (generate_image, generate_voice) inline, this lists which
+   * side-effect tools were ALREADY executed so the client can skip
+   * re-running them in `runInteractSideEffects`. Prevents double
+   * generation.
+   *
+   * Empty set for single-shot paths (classic JSON-dispatcher, single-
+   * shot tool-calling) — those paths need the side-effect layer to
+   * run all media.
+   */
+  loopDispatchedTools?: Set<string>;
 }
 
 /**
@@ -334,8 +346,34 @@ export class AgentHarness {
       temperature: 0.5,
     });
 
-    const parsedIntent = toolCallsToIntent(result.toolCalls);
+    let parsedIntent = toolCallsToIntent(result.toolCalls);
+
+    // Defensive fallback: if the LLM returned NO tool calls but DID
+    // return text that looks like JSON (happens when the model ignores
+    // the tool declarations and outputs JSON directly), try to parse
+    // it as a classic JSON intent. This prevents raw JSON from leaking
+    // into the chat as a proactive message.
     if (
+      result.toolCalls.length === 0 &&
+      typeof result.textResponse === "string" &&
+      result.textResponse.trim().startsWith("{")
+    ) {
+      try {
+        const jsonIntent = JSON.parse(result.textResponse);
+        if (jsonIntent && typeof jsonIntent === "object") {
+          parsedIntent = {
+            ...parsedIntent,
+            ...jsonIntent,
+          };
+          // Clear the textResponse so the raw JSON doesn't leak —
+          // it will be re-read from the parsed intent below.
+          parsedIntent.textResponse = jsonIntent.textResponse || "";
+        }
+      } catch {
+        // Not valid JSON — leave parsedIntent as-is (empty textResponse
+        // → treated as implicit skip below).
+      }
+    } else if (
       typeof result.textResponse === "string" &&
       result.textResponse.trim().length > 0
     ) {
@@ -430,6 +468,9 @@ export class AgentHarness {
     // get_state, iteration 2 calls generate_image based on the state).
     const allToolCalls: import("../types.js").LLMToolCall[] = [];
     let finalTextResponse = "";
+    // Track which side-effect tools the loop already executed so the
+    // client can skip re-running them.
+    const loopDispatchedTools = new Set<string>();
     let totalChars = conversation.reduce(
       (sum, m) => sum + (m.content?.length ?? 0),
       0,
@@ -469,22 +510,55 @@ export class AgentHarness {
         break;
       }
 
-      // Echo the assistant's tool-call turn back into the conversation
-      // (providers require this so the next iteration sees the
-      // assistant's tool calls alongside the results). We use a
-      // simplified assistant message that summarizes the calls — the
-      // provider's chat() will translate as needed.
-      const assistantToolCallSummary = result.toolCalls
-        .map((c) => `[tool call: ${c.name}(${c.arguments})]`)
-        .join(" ");
+      // Check if the model called "speak" — if so, the character has
+      // replied. Dispatch all tool calls from this iteration, then
+      // TERMINATE the loop. The character's reply is complete; there
+      // is no reason to iterate further. Without this, the model tends
+      // to repeat the same speak call in the next iteration because it
+      // sees the speak tool result and thinks "I should reply again."
+      const calledSpeak = result.toolCalls.some(
+        (c) => c.name === "speak" || c.name === "skip_turn",
+      );
+
+      // Dispatch tools for THIS iteration (below). Set termination if
+      // speak was called so we break after dispatching.
+      // (The dispatch code follows — we can't break before it because
+      // we still need to execute update_state, generate_image, etc.
+      // that arrived alongside speak in the same response.)
+
+      // Echo the assistant's tool-call turn back into the conversation.
+      // OpenAI/DeepSeek REQUIRE the assistant message to carry the
+      // actual tool_calls array (not a text summary) so the provider
+      // can correlate each subsequent tool-result message to its
+      // originating call via tool_call_id.
+      //
+      // CRITICAL for DeepSeek thinking mode: reasoning_content MUST be
+      // passed back on the assistant message when tool_calls are
+      // present. Without it, DeepSeek returns 400 "The reasoning_content
+      // in the thinking mode must be passed back to the API."
       conversation.push({
         role: "assistant",
-        content:
-          (finalTextResponse || "") +
-          (finalTextResponse && assistantToolCallSummary ? "\n" : "") +
-          assistantToolCallSummary,
-      });
-      totalChars += conversation[conversation.length - 1].content.length;
+        content: finalTextResponse || "",
+        reasoning_content: result.reasoningContent || undefined,
+        // Attach the raw tool_calls in OpenAI format so the provider
+        // can match them with the tool-result messages below.
+        tool_calls: result.toolCalls.map((c, idx) => ({
+          id: c.id || `call_${idx}_${Date.now()}`,
+          type: "function",
+          function: {
+            name: c.name,
+            arguments: c.arguments || "{}",
+          },
+        })),
+      } as any);
+      totalChars += (conversation[conversation.length - 1] as any).content.length;
+
+      // Synthesize stable IDs for tool calls that didn't have one
+      // (Anthropic native shape). The tool-result messages below
+      // reference these IDs.
+      const callIds = result.toolCalls.map((c, idx) =>
+        c.id || (conversation[conversation.length - 1] as any).tool_calls[idx].id
+      );
 
       // Dispatch each tool call via the registry. Run them
       // concurrently — most tools are independent within one
@@ -503,10 +577,39 @@ export class AgentHarness {
             const args = call.arguments
               ? JSON.parse(call.arguments)
               : {};
+
+            // Phase 3.3.1 — when the LLM calls speak, emit text-ready
+            // IMMEDIATELY so the UI renders the text bubble before
+            // waiting for media tools. This enables the "text first,
+            // photo next" UX.
+            if (call.name === "speak") {
+              this.sink.emit({
+                type: "text-ready",
+                text: args.text || "",
+                actionText: args.actionText,
+                metadata: {},
+              });
+            }
+
             const r = await this.withToolEvents(call.name, args, () =>
               tool.execute(args, toolCtx),
             );
             resultStr = JSON.stringify(r);
+
+            // Track that this tool was dispatched by the loop so the
+            // client doesn't re-emit text-ready (for speak), re-PATCH
+            // state (for update_state), or re-run side-effects
+            // (for media/gift/event tools).
+            if (
+              call.name === "speak" ||
+              call.name === "update_state" ||
+              call.name === "generate_image" ||
+              call.name === "generate_voice" ||
+              call.name === "trigger_event" ||
+              call.name === "gift_outfit"
+            ) {
+              loopDispatchedTools.add(call.name);
+            }
           } catch (e) {
             resultStr = JSON.stringify({
               __error: e instanceof Error ? e.message : String(e),
@@ -514,23 +617,43 @@ export class AgentHarness {
           }
         }
         // Stash for the conversation + the accumulator.
-        return { call, resultStr };
+        // `errored` = true when the tool execution threw (or the tool
+        // was unknown). Errored calls are fed back to the LLM but
+        // excluded from intent folding to prevent spurious re-attempts.
+        return { call, resultStr, errored: !!resultStr && resultStr.includes('"__error"') };
       });
 
       const toolResults = await Promise.all(toolResultPromises);
 
       // Append tool-result messages to the conversation + accumulate.
-      for (const { call, resultStr } of toolResults) {
-        allToolCalls.push(call);
-        // Use the tool-call id when present; synthesize when absent
-        // (Anthropic native) so the loop can still correlate.
-        const toolCallId = call.id ?? `${call.name}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      // Skip errored tool calls from intent folding — a failed
+      // generate_image must NOT set intent.imageParams (otherwise
+      // the side-effect layer tries to run it again). The error
+      // result IS still fed back to the LLM via the conversation
+      // (so the model can react), but the intent stays clean.
+      for (let i = 0; i < toolResults.length; i++) {
+        const { call, resultStr, errored } = toolResults[i];
+        if (!errored) {
+          allToolCalls.push(call);
+        }
+        // Use the stable ID from the assistant message's tool_calls
+        // array so the provider can correlate.
+        const toolCallId = callIds[i];
         conversation.push({
           role: "tool",
           toolCallId,
           content: resultStr,
         });
         totalChars += resultStr.length;
+      }
+
+      // If speak (or skip_turn) was called this iteration, the
+      // character's reply is complete. Terminate the loop — do NOT
+      // feed the results back for another iteration. The model would
+      // just repeat the same speak call or output duplicate text.
+      if (calledSpeak) {
+        termination = "no-tool-calls";
+        break;
       }
 
       // If this was the last allowed iteration, terminate with the cap.
@@ -564,7 +687,7 @@ export class AgentHarness {
       });
     }
 
-    return { parsedIntent };
+    return { parsedIntent, loopDispatchedTools };
   }
 
   /* ============================================================ */
@@ -811,7 +934,16 @@ export class AgentHarness {
     params: InteractParams,
     resolvedTextResponse: string,
     toolCtx: ToolContext,
+    /**
+     * Phase 3.3.1 — when the multi-step loop already dispatched
+     * certain tools inline (e.g. generate_image, generate_voice),
+     * this set contains their names. The side-effect layer SKIPS
+     * them to prevent double generation. Undefined or empty for
+     * single-shot paths.
+     */
+    dispatchedTools?: Set<string>,
   ): Promise<InteractSideEffectResult> {
+    const skip = new Set(dispatchedTools ?? []);
     let imageUrl: string | undefined = undefined;
     let imageMediaId: string | undefined = undefined;
     let audioUrl: string | undefined = undefined;
@@ -845,7 +977,7 @@ export class AgentHarness {
     const tasks: Promise<unknown>[] = [];
 
     // [1] triggerEvent — same catch-and-swallow as the legacy code.
-    if (parsedIntent.triggerEvent) {
+    if (parsedIntent.triggerEvent && !skip.has("trigger_event")) {
       const triggerEvent = buildTriggerEventTool();
       tasks.push(
         this.withToolEvents("trigger_event", parsedIntent.triggerEvent as Record<string, unknown>, () =>
@@ -859,6 +991,7 @@ export class AgentHarness {
 
     // [2] giftOutfit — same validation + capture as the legacy code.
     if (
+      !skip.has("gift_outfit") &&
       parsedIntent.giftOutfit &&
       typeof parsedIntent.giftOutfit === "object" &&
       typeof parsedIntent.giftOutfit.descriptionText === "string" &&
@@ -877,7 +1010,9 @@ export class AgentHarness {
     }
 
     // [3] image — mirrors the legacy shouldGenerateImage gate.
+    // Skip if the loop already dispatched generate_image inline.
     const shouldGenerateImage =
+      !skip.has("generate_image") &&
       ctx.types.includes(InteractRequestType.IMAGE) &&
       (!ctx.isAuto || !!parsedIntent.imageParams);
     if (shouldGenerateImage) {
@@ -900,10 +1035,10 @@ export class AgentHarness {
       );
     }
 
-    // [4] voice — mirrors the legacy shouldGenerateVoice gate. The tool
-    //     does its own sanitization + "..." fallback; we pass the
-    //     resolved text and the LLM-supplied dynamic args.
+    // [4] voice — mirrors the legacy shouldGenerateVoice gate.
+    // Skip if the loop already dispatched generate_voice inline.
     const shouldGenerateVoice =
+      !skip.has("generate_voice") &&
       ctx.types.includes(InteractRequestType.VOICE) &&
       (!ctx.isAuto || !!parsedIntent.voiceArgs);
     if (shouldGenerateVoice) {

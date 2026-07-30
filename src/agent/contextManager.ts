@@ -22,12 +22,23 @@ import {
   ProactiveParams,
   InteractParams,
   WardrobeItem,
+  MomentSummary,
 } from "../types.js";
 import { normalizeRequestTypes } from "../utils/requestTypes.utils.js";
 import { CyberSoulApi } from "../api/cyberSoulApi.js";
 
 /** Wardrobe prompt-string cache TTL — MUST stay at 5 minutes (§5.4 item 6). */
 const WARDROBE_CACHE_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * Recent-moments cache TTL. Moments only change when an `end_turn`
+ * consolidation runs (at most a few times per session), so a 5-minute
+ * cache is safe and avoids an extra HTTP round-trip every chat turn.
+ */
+const MOMENTS_CACHE_TTL_MS = 5 * 60 * 1000;
+
+/** Cap on how many moments to inject into the prompt. */
+const MAX_MOMENTS_IN_PROMPT = 10;
 
 /**
  * The mode-specific subset returned by `prepare()`. The
@@ -57,6 +68,8 @@ export type TurnContext = InteractContext | ProactiveContext;
 export class ContextManager {
   private cachedWardrobeStr: string | null = null;
   private cachedWardrobeTime: number = 0;
+  private cachedMoments: MomentSummary[] | null = null;
+  private cachedMomentsTime: number = 0;
 
   constructor(private readonly api: CyberSoulApi) {}
 
@@ -116,22 +129,79 @@ export class ContextManager {
   }
 
   /**
-   * Shared read-path: fetch state + wardrobe in parallel, normalize
-   * the request types, derive the modality gates.
+   * Cached recent story moments (5 minute TTL). The raw moments come
+   * from `api.getMoments()`; this method owns the cache so we don't
+   * add an extra HTTP round-trip on every chat turn.
+   *
+   * IMPORTANT: moments change when an `end_turn` consolidation runs
+   * (saveMoment + core-memory PATCH). The TTL alone is NOT enough to
+   * keep the cache fresh — `invalidateMomentsCache()` must be called
+   * after any moment write so the next turn sees the updated list.
+   *
+   * Failures are swallowed (mirrors the wardrobe fallback pattern) —
+   * the prompt builder simply omits `[RECENT MOMENTS]` when the list
+   * is empty, so a transient backend hiccup degrades gracefully
+   * instead of blocking the conversation.
+   */
+  async getRecentMoments(): Promise<MomentSummary[]> {
+    const now = Date.now();
+    if (
+      this.cachedMoments &&
+      now - this.cachedMomentsTime <= MOMENTS_CACHE_TTL_MS
+    ) {
+      return this.cachedMoments;
+    }
+
+    let moments: MomentSummary[] = [];
+    try {
+      moments = await this.api.getMoments(MAX_MOMENTS_IN_PROMPT);
+    } catch (e) {
+      // Swallow — the prompt builder handles an empty moments list
+      // by omitting the [RECENT MOMENTS] block entirely.
+    }
+
+    this.cachedMoments = moments;
+    this.cachedMomentsTime = now;
+    return moments;
+  }
+
+  /**
+   * Invalidate the moments cache so the next `getRecentMoments()`
+   * re-fetches from the backend. MUST be called after any moment
+   * write (`saveMoment`, core-memory consolidation) — otherwise
+   * turns within the 5-min TTL window will read stale moments that
+   * miss the just-saved entry.
+   */
+  invalidateMomentsCache(): void {
+    this.cachedMoments = null;
+    this.cachedMomentsTime = 0;
+  }
+
+  /**
+   * Shared read-path: fetch state + wardrobe + recent moments in
+   * parallel, normalize the request types, derive the modality gates.
    *
    * Mirrors legacy `prepareInteractContext` and `prepareProactiveContext`
-   * exactly — `Promise.all` over the two reads, `normalizeRequestTypes`
-   * applied to the caller's `requestTypes`, `requestedOthers` filtered
-   * to drop AUTO + TEXT. The only difference between modes is which
-   * derived booleans are attached.
+   * — `Promise.all` over the reads, `normalizeRequestTypes` applied to
+   * the caller's `requestTypes`, `requestedOthers` filtered to drop
+   * AUTO + TEXT. Recent moments are merged onto `state.recent_moments`
+   * so the prompt builder can inject them as `[RECENT MOMENTS]`.
    */
   private async prepareBase(
     requestTypes: InteractRequestType[] | undefined,
   ): Promise<BaseTurnContext> {
-    const [state, availableOutfits] = await Promise.all([
+    const [state, availableOutfits, recentMoments] = await Promise.all([
       this.fetchState(),
       this.getWardrobePromptStr(),
+      this.getRecentMoments(),
     ]);
+
+    // Inject the moments onto the state so the prompt builder sees them.
+    // The backend's GET /state does NOT return moments; they come from a
+    // separate endpoint and are merged here.
+    if (recentMoments.length > 0) {
+      state.recent_moments = recentMoments;
+    }
 
     const types = normalizeRequestTypes(requestTypes);
     const requestedOthers = types.filter(

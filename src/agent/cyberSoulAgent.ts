@@ -93,29 +93,27 @@ export class CyberSoulAgent {
       // Mode 1: wrap existing client.
       this.client = options.client;
     } else {
-      // Mode 2: self-construct. Build a client with toolCalling baked in.
+      // Mode 2: self-construct. Phase 5 — we NO LONGER bake
+      // `toolCalling: true` into the config. Instead, the underlying
+      // CyberSoulClient auto-detects from the backend LLM template
+      // on first use and routes accordingly. The agent's AsyncIterable
+      // event API works on BOTH paths — tool-calling when the model
+      // supports it, classic JSON-dispatcher when it doesn't.
       const cfg = options.config!;
-      this.client = new CyberSoulClientImpl({
-        ...cfg,
-        llmConfig: {
-          ...cfg.llmConfig,
-          capabilities: {
-            ...cfg.llmConfig.capabilities,
-            toolCalling: true,
-          },
-        },
-      });
+      this.client = new CyberSoulClientImpl(cfg);
     }
 
-    // STRUCTURAL ASSERTION: the agent path REQUIRES tool-calling support.
-    // This is the whole point of the two-path separation — the agent is
-    // only active when the configured LLM supports tooling. Fails fast
-    // at construction instead of producing confusing runtime errors.
+    // Phase 5 — soft capability check. We no longer throw at
+    // construction. The agent works on both paths (tool-calling AND
+    // classic JSON-dispatcher). When the provider structurally can't
+    // do tool-calling (no `chat()` method at all — e.g. a custom
+    // minimal provider), we log a hint so the caller knows they're
+    // on the classic path. The real per-model detection happens in
+    // CyberSoulClient.resolveCapabilities() against the backend template.
     if (!supportsToolCalling((this.client as any).llm)) {
-      throw new CyberSoulError(
-        "agent-requires-tooling",
-        "CyberSoulAgent requires an LLM provider that implements chat() (native tool-calling). " +
-          "Either configure a tool-calling-capable provider/model, or use CyberSoulClient for the classic JSON-dispatcher path.",
+      console.info(
+        "[CyberSoulAgent] The LLM provider does not implement chat() (native tool-calling). " +
+          "The agent will use the classic JSON-dispatcher path. This is fine — the AsyncIterable event API works on both paths.",
       );
     }
 

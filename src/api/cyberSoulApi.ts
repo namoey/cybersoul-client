@@ -7,6 +7,7 @@ import {
   LikedPicture,
   CoreMemory,
   UserCodex,
+  MomentSummary,
 } from "../types.js";
 import {
   CyberSoulApiError,
@@ -614,6 +615,39 @@ export class CyberSoulApi {
     if (!res.ok) {
       throw new Error("Failed to save character moment.");
     }
+  }
+
+  /**
+   * GET /api/v1/cyber-soul/characters/moments. Returns the character's
+   * saved story moments (first-person narrative summaries of past
+   * conversation sessions), newest first. Used by the ContextManager
+   * to populate `state.recent_moments`, which the prompt builder
+   * injects as `[RECENT MOMENTS]` so the character recalls prior
+   * conversations in detail — not just the limited key events in
+   * `core_memory`.
+   *
+   * `limit` caps how many moments are returned (default 10). The
+   * backend returns all moments sorted newest-first; we slice here
+   * to keep the transport layer simple.
+   */
+  async getMoments(limit = 10): Promise<MomentSummary[]> {
+    const res = await this.apiFetch(
+      "/api/v1/cyber-soul/characters/moments",
+    );
+    if (!res.ok) {
+      throw new Error("Failed to fetch character moments.");
+    }
+    const json = await res.json();
+    const moments: MomentSummary[] = (json.data || []).map(
+      (m: any) => ({
+        id: m.id,
+        date: m.date,
+        time: m.time,
+        summary: m.summary,
+        likedPictures: m.likedPictures,
+      }),
+    );
+    return moments.slice(0, limit);
   }
 
   /**

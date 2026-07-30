@@ -64,6 +64,7 @@ export type {
   SupportedLLMModel,
   ICharacterProfile,
   LikedPicture,
+  MomentSummary,
 } from "../types.js";
 
 export { InteractRequestType } from "../types.js";

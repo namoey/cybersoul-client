@@ -329,6 +329,19 @@ Current time: ${timeStr} (${period})`);
     }
   }
 
+  // [2b] RECENT MOMENTS — first-person narrative summaries of recent
+  // conversation sessions. Richer than core_memory's keyEvents: these
+  // let the character recall WHAT was talked about, not just bullet
+  // points. Newest first; capped to keep the prompt bounded.
+  if (state.recent_moments && state.recent_moments.length > 0) {
+    const momentLines = state.recent_moments.map(
+      (m) => `- [${m.date} ${m.time}] ${m.summary}`,
+    );
+    contextParts.push(
+      `\n[RECENT MOMENTS] (What we recently talked about — your memory of our recent conversations)\n${momentLines.join("\n")}`,
+    );
+  }
+
   // [3] USER CODEX (Relationships dynamically evaluated)
   if (state.user_codex) {
     const { basicInfo, psychological, familiarityScore = 0 } = state.user_codex;
@@ -578,14 +591,14 @@ export function buildInteractSystemPrompt(
 [REACTIVE SKIP OPTION — THINK LIKE THE PERSON YOU ARE]
 You are NOT obligated to reply. A real human sometimes reads a message and chooses not to respond. You have the option to go quiet when THAT is the genuinely in-character thing to do. Reach for this option sparingly — the default is still to reply.
 
-Reasons you MAY set "shouldSkipInteract": true:
+Reasons you MAY choose to skip (not reply):
   - The user's message is a conversation closer that needs no acknowledgement (e.g., a bare "ok", "cool", "lol", "haha", a thumbs-up emoji, or a one-word acknowledgment that answers itself).
   - The user explicitly told you to stop, leave them alone, go away, or not to reply — and YOUR personality means you'd actually honor that with silence rather than a parting line.
   - The user is talking AT you in a monologue that doesn't invite a response, and interjecting would feel forced or rude for who YOU are.
   - YOUR personality / current mood / relationship state makes silence the authentic reaction (e.g., you're upset, distant, or the trust is too low to engage).
 
 When in doubt: REPLY. Skipping is the rare exception, not the rule. Never skip just because the message is short or you're unsure what to say — if the user is clearly engaging you, engage back. Skipping must always be a deliberate, in-character choice.
-When you DO skip: set "shouldSkipInteract": true, set "skipReason" to one short sentence (for diagnostics only — never shown to the user), and set every other field to null. Do NOT produce text, media, or a stateUpdate.`
+When you DO skip: ${embedJsonSchemaHint ? 'set "shouldSkipInteract": true, set "skipReason" to one short sentence (for diagnostics only — never shown to the user), and set every other field to null. Do NOT produce text, media, or a stateUpdate.' : 'use the skip_turn tool with a brief reason. Do NOT use any other tools — no speak, no media, no state update.'}`
     : "";
 
   // The schema hint block — ONLY for the classic JSON-dispatcher path.
@@ -618,7 +631,7 @@ Note: Always include "isEndTurn". If "imageParams", "voiceArgs", "triggerEvent",
   // - Agent: "respond using the available tools." (references native tools)
   const introLine = embedJsonSchemaHint
     ? `The user has sent a message. You must evaluate the context and the user's message, and return a JSON object (no markdown formatting) that dictates the character's multi-modal response.`
-    : `The user has sent a message. Evaluate the context and respond using the available tools.`;
+    : `The user has sent a message. Respond using the available tools — ALL tools you need for this turn must be called NOW in a single response. Do NOT defer ("let me send you X in a second") — there is no second turn. If the user asked for a photo or voice, call "generate_image" and/or "generate_voice" in THIS response alongside "speak". Use "speak" for your reply text + action text. Use "update_state" to adjust the relationship temperature or scene. Use "skip_turn" only when you choose not to reply. Do NOT output JSON or plain text as your message content — always use the tools.`;
 
   return `${buildStateContextPrompt(state, {
     systemPromptFragment: inputs.systemPromptFragment,
@@ -630,27 +643,25 @@ ${introLine}
 ${skipSection}
 
 ${modalitiesInstruction}
-Every turn adjusts trust: positive +1, negative -1, neutral 0. Always include 'stateUpdate' with integer 'temperatureDelta' (range guidance: 0 cold to 100 obsessive).
 
-Always return 'stateUpdate.ongoingScene' as an object with both keys: { "scene": string, "outfit": string }.
-For 'ongoingScene.outfit': decide based on the current active wardrobe by default; switch to a new explicit outfit description only if the scene implies changing clothes; if no clothing is worn, explicitly output "naked".
+[TURN BEHAVIOR — WHAT TO DO THIS TURN]
+Every turn you adjust trust: positive +1, negative -1, neutral 0. Reflect this as a small integer in your relationship temperature update.
 
-USER ANALYSIS WORKFLOW:
-- Extract facts ONLY about the HUMAN USER from their VERY LAST MESSAGE.
-- DO NOT extract facts about yourself (the AI character), your own boundaries, or your own preferences.
+SCENE & OUTFIT: Track your current physical scene and what you're wearing. Keep the same outfit by default; change only if the scene implies changing clothes (e.g., going to bed, going out). If no clothing is worn, track that explicitly.
+
+USER ANALYSIS: Extract facts ONLY about the HUMAN USER from their VERY LAST MESSAGE. Do NOT extract facts about yourself.
 - Add only explicit new user facts from this turn (no inference).
 - Exclude transient, temporary, or time-sensitive activities (e.g., "I am working on a release today", "I'm eating dinner"). Do not map short-term actions into permanent categories like 'occupation' or 'hobby'.
 - For 'preference', only capture explicit statements the user makes about what THEY like (e.g., "I like/love/dislike/hate...").
-- For 'boundary', only capture explicit rejections or limitations from the user (e.g., "Don't talk about X to me", "I won't do Y"). DO NOT record your own character boundaries here.
+- For 'boundary', only capture explicit rejections or limitations from the user (e.g., "Don't talk about X to me", "I won't do Y").
 - Categories: 'realName', 'occupation', 'age', 'gender', 'hobby', 'trait', 'communicationStyle', 'boundary', 'preference'.
-- Keep nicknames in stateUpdate; do not place them in newFactsLearned.
-- If no new explicit fact about the human user is learned, set userAnalysis to null.
+- If no new explicit fact about the human user is learned, do not include any user analysis.
 
-For 'isEndTurn', use true only when the interaction naturally concludes (confirmation/bye, event ending, or clear hard scene shift); otherwise false.
+TURN CLOSURE: Indicate whether the interaction naturally concludes (confirmation/bye, event ending, or clear hard scene shift).
 
-If the user explicitly praises, loves, or stars the VERY LAST picture you sent (not general appearance, but the recent photo itself), set 'likePreviousPicture' to true in the JSON, otherwise false.
+PICTURE LIKES: If the user explicitly praises, loves, or stars the VERY LAST picture you sent (not general appearance, but the recent photo itself), indicate that.
 
-Voice direction for voiceArgs: ${getVoiceDirectorInstruction(state)}
+Voice direction: ${getVoiceDirectorInstruction(state)}
 
 ${schemaHint}`;
 }
@@ -717,7 +728,7 @@ If "shouldSkipProactive" is false, "textResponse" is required and "stateUpdate" 
   ${getImageSchemaParams(imageAllowed)},
   "voiceArgs": null
 }`
-    : `Decide whether to reach out using the available tools.`;
+    : `Decide whether to reach out using the available tools. If you decide to reach out, use the "speak" tool for your message + action text. If you decide NOT to reach out, use the "skip_proactive" tool. Do NOT output JSON or plain text as your message content — always use the tools.`;
 
   return `${baseContext}
 
@@ -727,7 +738,7 @@ Time has passed since the last exchange in [CHAT HISTORY]. You have an OPPORTUNI
 [HOW TO DECIDE — THINK LIKE THE PERSON YOU ARE]
 Real humans rarely send unprompted messages. Most of the time, silence is the right answer. Reach out ONLY if a real person with YOUR personality, in YOUR relationship to this user, at THIS moment, would genuinely feel moved to text.
 
-Reasons NOT to reach out (set "shouldSkipProactive": true):
+Reasons NOT to reach out${embedJsonSchemaHint ? ' (set "shouldSkipProactive": true)' : ' (use the skip_proactive tool)'}:
   - The last exchange ended on a note that closes the door — a farewell, a brush-off, a fight, a "talk later", an explicit dismissal — from either side. If YOU pushed them away last turn (because of your traits or a fight), staying quiet IS the in-character choice; flipping to friendly now makes you look bipolar.
   - Your relationship is too distant for unsolicited contact (e.g. STRANGER, COLD) or your current mood is too low to want to reach out.
   - Too little time has passed since the last message for a follow-up to feel natural. Use the time gap shown in [CHAT HISTORY] — minutes after the last turn is almost always too soon.

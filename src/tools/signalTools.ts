@@ -46,9 +46,14 @@ export const speakTool: Tool<
     },
     required: ["text"],
   },
-  async execute() {
-    // Placeholder — Phase 1 reads these off DispatcherIntent directly.
-    throw new Error("speak tool is not dispatchable in Phase 1");
+  async execute(args) {
+    // Returns the args back — the loop/harness reads them via
+    // toolCallsToIntent and also emits text-ready when dispatching.
+    return {
+      text: args.text,
+      actionText: args.actionText,
+      metadata: {} as InteractMetadata,
+    };
   },
 };
 
@@ -63,7 +68,7 @@ export const likePictureTool: Tool<Record<string, never>, LikePictureResult> = {
     "Marker that the user explicitly praised/loved/starred the VERY LAST picture the character sent (not general appearance). Presence == true.",
   inputSchema: { type: "object", properties: {} },
   async execute() {
-    throw new Error("like_picture tool is not dispatchable in Phase 1");
+    return { liked: true };
   },
 };
 
@@ -78,7 +83,7 @@ export const endTurnTool: Tool<Record<string, never>, EndTurnResult> = {
     "Marker that the interaction naturally concludes (confirmation/bye, event ending, or clear hard scene shift).",
   inputSchema: { type: "object", properties: {} },
   async execute() {
-    throw new Error("end_turn tool is not dispatchable in Phase 1");
+    return { isEndTurn: true };
   },
 };
 
@@ -96,8 +101,8 @@ export const skipTurnTool: Tool<{ reason?: string }, SkipTurnResult> = {
     type: "object",
     properties: { reason: { type: "string" } },
   },
-  async execute() {
-    throw new Error("skip_turn tool is not dispatchable in Phase 1");
+  async execute(args) {
+    return { skipped: true, reason: args.reason || "Character chose not to reply." };
   },
 };
 
@@ -118,7 +123,7 @@ export const skipProactiveTool: Tool<
     type: "object",
     properties: { reason: { type: "string" } },
   },
-  async execute() {
-    throw new Error("skip_proactive tool is not dispatchable in Phase 1");
+  async execute(args) {
+    return { skipped: true, reason: args.reason || "Character chose not to reach out." };
   },
 };

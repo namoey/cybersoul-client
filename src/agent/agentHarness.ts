@@ -560,6 +560,17 @@ export class AgentHarness {
         c.id || (conversation[conversation.length - 1] as any).tool_calls[idx].id
       );
 
+      // Pre-scan: detect whether this iteration includes voice/image
+      // generation alongside speak. This lets us set willGenerateVoice
+      // on the speak text-ready event so the UI can suppress the early
+      // text bubble (avoiding the text→voice flicker).
+      const hasVoiceInIteration = result.toolCalls.some(
+        (c) => c.name === "generate_voice",
+      );
+      const hasImageInIteration = result.toolCalls.some(
+        (c) => c.name === "generate_image",
+      );
+
       // Dispatch each tool call via the registry. Run them
       // concurrently — most tools are independent within one
       // iteration. Errors are captured as JSON error objects so the
@@ -582,12 +593,18 @@ export class AgentHarness {
             // IMMEDIATELY so the UI renders the text bubble before
             // waiting for media tools. This enables the "text first,
             // photo next" UX.
+            //
+            // Set willGenerateVoice when generate_voice is also called
+            // in this iteration — the UI uses this to suppress the
+            // early text bubble and show only the voice bubble.
             if (call.name === "speak") {
               this.sink.emit({
                 type: "text-ready",
                 text: args.text || "",
                 actionText: args.actionText,
-                metadata: {},
+                metadata: {
+                  willGenerateVoice: hasVoiceInIteration,
+                },
               });
             }
 

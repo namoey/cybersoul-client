@@ -311,10 +311,17 @@ export class AgentHarness {
     const parsedIntent = toolCallsToIntent(result.toolCalls);
 
     // The model may emit text alongside tool calls (or as a pure-text
-    // reply with no tool calls). Preserve either.
+    // reply with no tool calls). Preserve either — BUT prefer the
+    // `speak` tool's `text` arg when present: for tool-calling models
+    // (e.g. DeepSeek reasoner/thinking mode) the raw `content` field can
+    // hold reasoning/preamble while the actual dialogue lives in the
+    // speak tool call. Only fall back to raw content when no speak text
+    // was provided, otherwise that reasoning leaks into notifications.
+    const speakText = parsedIntent.textResponse?.trim() ?? "";
     if (
       typeof result.textResponse === "string" &&
-      result.textResponse.trim().length > 0
+      result.textResponse.trim().length > 0 &&
+      speakText.length === 0
     ) {
       parsedIntent.textResponse = result.textResponse;
     }
@@ -375,8 +382,12 @@ export class AgentHarness {
       }
     } else if (
       typeof result.textResponse === "string" &&
-      result.textResponse.trim().length > 0
+      result.textResponse.trim().length > 0 &&
+      (parsedIntent.textResponse?.trim() ?? "").length === 0
     ) {
+      // Prefer the `speak` tool's `text` arg over raw `content` (which
+      // may be reasoning/preamble for thinking-mode models). See note in
+      // runInteractDispatchWithTools above.
       parsedIntent.textResponse = result.textResponse;
     }
 
@@ -683,7 +694,17 @@ export class AgentHarness {
 
     // Fold all accumulated tool calls into the final intent.
     const parsedIntent = toolCallsToIntent(allToolCalls);
-    if (finalTextResponse) {
+    // Only fall back to the raw LLM `content` field when NO `speak` tool
+    // call populated intent.textResponse. For tool-calling models (e.g.
+    // DeepSeek reasoner/thinking mode), the `speak` tool's `text` arg is
+    // the canonical dialogue, while the raw `content` field may hold
+    // reasoning/preamble. Unconditionally overriding leaked that reasoning
+    // into reply.textResponse — which is what notifications read — even
+    // though the chat bubble (fed by the early streamed `speak` text)
+    // showed the correct line. Symptom: "notification shows reasoning
+    // text instead of the real final response."
+    const speakText = parsedIntent.textResponse?.trim() ?? "";
+    if (finalTextResponse && speakText.length === 0) {
       parsedIntent.textResponse = finalTextResponse;
     }
 

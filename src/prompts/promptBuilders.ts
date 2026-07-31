@@ -7,6 +7,7 @@ import {
 import { resolveTimeContext, getElapsedTimeInfo } from "../utils/time.utils.js";
 import { normalizeOngoingSceneState } from "../utils/state.utils.js";
 import { formatHistoryEntries } from "../utils/history.utils.js";
+import { buildImageJsonSchemaString } from "./image.js";
 import type {
   ConsolidationPromptInputs,
   InteractPromptInputs,
@@ -96,20 +97,7 @@ export function buildHistoryTranscript(
 /* -------------------------------------------------------------------------- */
 
 export function getImageSchemaParams(allowed: boolean): string {
-  if (!allowed) return `"imageParams": null`;
-  return `"imageParams": {
-    "mode": "structured | full-prompt (use 'full-prompt' for highly dynamic actions)",
-    "full_prompt": "Use only if mode is full-prompt. Highly detailed visual description in ENGLISH. CRITICAL RULE FOR PERSPECTIVE: If you are physically separated from the user, simulate a selfie. However, absolutely DO NOT use the words 'selfie', 'phone', 'camera', 'lens', or 'holding' in this prompt (unless taking a mirror selfie). NEVER try to use negative prompting like 'no phone visible', as simply writing the word 'phone' forces image models to mistakenly draw a phone or phone border! Instead, achieve the natural selfie look using pure composition descriptions (e.g., 'intimate portrait looking directly at the viewer', 'high-angle portrait leaning forward', or 'wide portrait with one arm reaching out of the frame'). Vary the framing distance and angle to match the mood. If you are physically together with the user, the image MUST be a strict first-person perspective exclusively from the USER's eyes (start with 'POV: '). NEVER mix perspectives together. DO NOT describe the user (e.g., 'a man', 'the driver') as visible in the scene because the view IS the user. Describe ONLY the character looking back and their immediate surroundings. MUST align precisely with the character's current Wardrobe and exposure state. Explicitly describe the character's exact clothing (or specify naked/half-naked if applicable). Ensure basic appearance (makeup, body shape, hair, facial features, etc.) aligns exactly with the character's foundational appearance profile.",
-    "expression": "seductive | cute | happy | sleepy | dazed | pleased | default (Strictly choose ONE from this exact list. DO NOT invent new words like 'shy'.)",
-    "condition": "normal | sweaty | wet | messy | oily (Strictly choose ONE from this exact list.)",
-    "view_angle": "front | side | high_angle | from_below | boyfriend_view | selfie | mirror (Strictly choose ONE from this exact list. Use 'selfie' if physically separated from the user, otherwise use POV angles like 'boyfriend_view' or 'front' if together.)",
-    "exposure": "normal | cleavage | see_through | half_naked | naked | intimate (Strictly choose ONE from this exact list. Explicitly choose naked or half_naked if the active scene takes off outfit.)",
-    "pose": "e.g., sitting on bed, leaning forward (ENGLISH ONLY)",
-    "scene": "e.g., cozy bedroom, morning light (ENGLISH ONLY)",
-    "outfit": "auto | ondemand",
-    "ondemandOutfit": "e.g., silk robe (ENGLISH ONLY)",
-    "style": "e.g., photorealistic (ENGLISH ONLY)"
-  }`;
+  return buildImageJsonSchemaString(allowed);
 }
 
 export function getEventSchemaParams(userName?: string): string {

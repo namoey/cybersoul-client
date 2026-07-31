@@ -77,13 +77,15 @@ export function buildGenerateImageTool(
   return {
     name: "generate_image",
     description:
-      `Generate an image of the character with full creative detail. ` +
-        `CRITICAL PERSPECTIVE RULE: If physically separated from the user, simulate a selfie — but DO NOT use the words 'selfie', 'phone', 'camera', 'lens', or 'holding' in full_prompt (unless a mirror selfie). ` +
-        `Achieve the natural selfie look using pure composition (e.g. 'intimate portrait looking directly at the viewer', 'high-angle portrait leaning forward'). ` +
-        `If physically together with the user, the image MUST be strict first-person POV from the USER's eyes (start full_prompt with 'POV: '). ` +
-        `NEVER mix perspectives. DO NOT describe the user as visible — the view IS the user. ` +
-        `full_prompt MUST be in ENGLISH, highly detailed, aligned with the character's appearance/wardrobe/exposure, and must explicitly describe exact clothing (or naked/half-naked if applicable). ` +
-        `Always fill the structured fields (expression, pose, scene, view_angle, exposure) for maximum quality — mode 'structured' uses them to build the final prompt.`,
+      `Generate an image of the character. CRITICAL RULE FOR PERSPECTIVE: ` +
+        `If you are physically separated from the user, simulate a selfie. However, absolutely DO NOT use the words 'selfie', 'phone', 'camera', 'lens', or 'holding' in full_prompt (unless taking a mirror selfie). ` +
+        `NEVER try to use negative prompting like 'no phone visible', as simply writing the word 'phone' forces image models to mistakenly draw a phone or phone border! ` +
+        `Instead, achieve the natural selfie look using pure composition descriptions (e.g., 'intimate portrait looking directly at the viewer', 'high-angle portrait leaning forward', or 'wide portrait with one arm reaching out of the frame'). ` +
+        `Vary the framing distance and angle to match the mood. ` +
+        `If you are physically together with the user, the image MUST be a strict first-person perspective exclusively from the USER's eyes (start full_prompt with 'POV: '). NEVER mix perspectives together. ` +
+        `DO NOT describe the user (e.g., 'a man', 'the driver') as visible in the scene because the view IS the user. Describe ONLY the character looking back and their immediate surroundings. ` +
+        `MUST align precisely with the character's current Wardrobe and exposure state. Explicitly describe the character's exact clothing (or specify naked/half-naked if applicable). ` +
+        `Ensure basic appearance (makeup, body shape, hair, facial features, etc.) aligns exactly with the character's foundational appearance profile.`,
     inputSchema: {
       type: "object",
       properties: {
@@ -94,48 +96,48 @@ export function buildGenerateImageTool(
         },
         full_prompt: {
           type: "string",
-          description: "Highly detailed visual description in ENGLISH. Required when mode is 'full-prompt'. For 'structured' mode, still provide a short scene description here.",
+          description: "Highly detailed visual description in ENGLISH. Use only if mode is full-prompt. For 'structured' mode, still provide a short scene description here.",
         },
         expression: {
           type: "string",
           enum: ["seductive", "cute", "happy", "sleepy", "dazed", "pleased", "default"],
-          description: "Choose ONE. Do not invent values outside this list.",
+          description: "Strictly choose ONE from this exact list. DO NOT invent new words like 'shy'.",
         },
         condition: {
           type: "string",
           enum: ["normal", "sweaty", "wet", "messy", "oily"],
-          description: "Choose ONE.",
+          description: "Strictly choose ONE from this exact list.",
         },
         view_angle: {
           type: "string",
           enum: ["front", "side", "high_angle", "from_below", "boyfriend_view", "selfie", "mirror"],
-          description: "Choose ONE. Use 'selfie' if separated from user, otherwise 'boyfriend_view' or 'front' if together.",
+          description: "Strictly choose ONE from this exact list. Use 'selfie' if physically separated from the user, otherwise use POV angles like 'boyfriend_view' or 'front' if together.",
         },
         exposure: {
           type: "string",
           enum: ["normal", "cleavage", "see_through", "half_naked", "naked", "intimate"],
-          description: "Choose ONE. Explicitly choose naked/half_naked if the active scene requires it.",
+          description: "Strictly choose ONE from this exact list. Explicitly choose naked or half_naked if the active scene takes off outfit.",
         },
         pose: {
           type: "string",
-          description: "e.g. 'sitting on bed, leaning forward' (ENGLISH)",
+          description: "e.g., sitting on bed, leaning forward (ENGLISH ONLY)",
         },
         scene: {
           type: "string",
-          description: "e.g. 'cozy bedroom, morning light' (ENGLISH)",
+          description: "e.g., cozy bedroom, morning light (ENGLISH ONLY)",
         },
         outfit: {
           type: "string",
           enum: ["auto", "ondemand"],
-          description: "Use 'ondemand' with ondemandOutfit if specifying a custom outfit not in the wardrobe.",
+          description: "Use 'ondemand' with ondemandOutfit if specifying a custom outfit.",
         },
         ondemandOutfit: {
           type: "string",
-          description: "Custom outfit description (ENGLISH). Only when outfit is 'ondemand'.",
+          description: "e.g., silk robe (ENGLISH ONLY)",
         },
         style: {
           type: "string",
-          description: "e.g. 'photorealistic' (ENGLISH)",
+          description: "e.g., photorealistic (ENGLISH ONLY)",
         },
       },
       required: ["mode", "full_prompt"],

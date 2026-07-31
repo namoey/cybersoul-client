@@ -107,17 +107,26 @@ export function extractIntentFromRawText(
     return null;
   }
 
-  // Nested tool-calling schema: has a `speak` object (or any other known
-  // tool key with a non-null value). Synthesize tool calls and reuse the
-  // canonical bridge so the field mapping has one implementation.
-  if (typeof parsed.speak === "object" && parsed.speak !== null) {
+  // Nested tool-calling schema: the model emitted tool calls as a JSON
+  // object keyed by tool name, e.g.
+  //   {"speak":{"text":...},"update_state":{"stateUpdate":{...}}, ...}
+  //   {"skip_turn":{"reason":"..."}}           ← pure-signal, no speak
+  // Detect this when ANY known tool key holds a non-null value (not just
+  // `speak` — a pure skip_turn/end_turn/like_picture turn has no speak).
+  // Synthesize tool calls and reuse the canonical bridge so the field
+  // mapping has one implementation.
+  const nestedKeys = NESTED_TOOL_KEYS.filter((key) => {
+    const value = (parsed as Record<string, unknown>)[key];
+    return value != null;
+  });
+  if (nestedKeys.length > 0) {
     const syntheticCalls: LLMToolCall[] = [];
-    for (const key of NESTED_TOOL_KEYS) {
+    for (const key of nestedKeys) {
       const value = (parsed as Record<string, unknown>)[key];
-      if (value == null) continue; // null / undefined → model said "not this tool"
       // Synthesize a tool call with the value as its arguments object.
-      // For signal tools (speak/end_turn/etc.) value is the args object;
-      // for null-but-present keys we already skipped above.
+      // For object-valued tools (speak, update_state, ...) the value IS
+      // the args object; bare-value signal tools (end_turn historically {})
+      // get wrapped so JSON.stringify produces a valid args object.
       syntheticCalls.push({
         id: `raw-${key}`,
         name: key,

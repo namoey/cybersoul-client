@@ -305,6 +305,82 @@ async function runTests() {
         assert.equal(result.parsedIntent.textResponse, "ok");
       },
     },
+    {
+      name: "3.3 loop — raw JSON leak regression: skip_turn-as-text recovers as shouldSkipInteract (no raw JSON in textResponse)",
+      run: async () => {
+        // Regression guard for the cybersoul-chat bug where the model
+        // emitted {"skip_turn":{"reason":"..."}} as TEXT content (no
+        // tool_calls) and the raw JSON leaked into parsedIntent.textResponse
+        // → shown in the chat bubble. The loop path must recover it via
+        // extractIntentFromRawText into a proper shouldSkipInteract intent,
+        // and textResponse must stay empty (no raw JSON leak).
+        const events: AgentEvent[] = [];
+        const sink: { emit(e: AgentEvent): void } = { emit: (e) => events.push(e) };
+        const skipJson = `{"skip_turn":{"reason":"对方只是回了声'嗯嗯'确认晚安，对话已自然结束，不需要再回复。"}}`;
+        const llm = new ScriptedLLM([
+          // Model emits the nested tool schema as plain text, no tool calls.
+          { textResponse: skipJson, toolCalls: [] },
+        ]);
+        const harness = new AgentHarness(llm as any, sink as unknown as EventStream);
+        const registry = new ToolRegistry();
+
+        const result = await harness.runInteractDispatchLoop(
+          [{ role: "user", content: "嗯嗯" }],
+          [],
+          registry,
+          buildToolCtx(),
+          {},
+        );
+
+        // Recovery should map skip_turn → shouldSkipInteract + skipReason.
+        assert.equal(result.parsedIntent.shouldSkipInteract, true);
+        assert.ok(
+          typeof result.parsedIntent.skipReason === "string" &&
+            result.parsedIntent.skipReason.includes("晚安"),
+          `skipReason should carry the reason, got: ${result.parsedIntent.skipReason}`,
+        );
+        // CRITICAL: textResponse must NOT contain the raw JSON.
+        assert.ok(
+          !result.parsedIntent.textResponse ||
+            result.parsedIntent.textResponse.trim().length === 0,
+          `textResponse must be empty for a skip turn, got: ${result.parsedIntent.textResponse}`,
+        );
+        assert.ok(
+          !result.parsedIntent.textResponse?.includes("{"),
+          "raw JSON must not leak into textResponse",
+        );
+      },
+    },
+    {
+      name: "3.3 loop — raw JSON leak regression: speak-as-text recovers the dialogue",
+      run: async () => {
+        // The other half of the bug: nested speak schema as text must
+        // recover speak.text into textResponse (not the raw JSON).
+        const events: AgentEvent[] = [];
+        const sink: { emit(e: AgentEvent): void } = { emit: (e) => events.push(e) };
+        const speakJson = `{"speak":{"text":"你好呀！","actionText":"(微笑)"},"update_state":null}`;
+        const llm = new ScriptedLLM([
+          { textResponse: speakJson, toolCalls: [] },
+        ]);
+        const harness = new AgentHarness(llm as any, sink as unknown as EventStream);
+        const registry = new ToolRegistry();
+
+        const result = await harness.runInteractDispatchLoop(
+          [{ role: "user", content: "hi" }],
+          [],
+          registry,
+          buildToolCtx(),
+          {},
+        );
+
+        assert.equal(result.parsedIntent.textResponse, "你好呀！");
+        assert.equal(result.parsedIntent.actionText, "(微笑)");
+        assert.ok(
+          !result.parsedIntent.textResponse?.includes("{"),
+          "raw JSON must not leak — textResponse should be the recovered dialogue",
+        );
+      },
+    },
   ];
 
   for (const t of tests) {

@@ -129,6 +129,63 @@ function runTests() {
       },
     },
     {
+      name: "pure skip_turn-as-text (no speak) is recovered as shouldSkipInteract — the reported leak",
+      run: () => {
+        // The exact user-reported shape: skip_turn with a reason, NO speak.
+        // Previously this leaked because the detection gate required a speak key.
+        const leak = `{"skip_turn":{"reason":"对方只是回了声'嗯嗯'确认晚安，对话已自然结束，薇薇困得眼皮打架，该睡了，不需要再回复。"}}`;
+        const intent = extractIntentFromRawText(leak);
+        assert.ok(intent, "expected skip_turn-as-text to be recovered");
+        assert.equal(intent!.shouldSkipInteract, true, "skip_turn must map to shouldSkipInteract");
+        assert.ok(
+          intent!.skipReason && intent!.skipReason.includes("晚安"),
+          "skipReason must carry the reason text",
+        );
+        // No text should leak as the reply — skip turns produce no message.
+        assert.ok(
+          !intent!.textResponse || intent!.textResponse.trim().length === 0,
+          "skip_turn must not populate textResponse",
+        );
+      },
+    },
+    {
+      name: "recovery is authoritative — callers must not fall back to raw JSON for empty textResponse",
+      run: () => {
+        // Contract guard: when recovery succeeds, the returned intent is
+        // authoritative. A pure-signal payload (skip_turn/end_turn) has
+        // empty textResponse BY DESIGN — that's not a reason for callers
+        // to overwrite it with the raw JSON string (which would leak).
+        // This test pins the returned shape so the wiring in the four
+        // dispatch paths (which check !textResponse → fall back) can rely
+        // on: recovery success ⇒ textResponse is intentional, never
+        // back-filled with raw content by the caller.
+        const leak = `{"end_turn":{}}`;
+        const intent = extractIntentFromRawText(leak);
+        assert.ok(intent);
+        assert.equal(intent!.isEndTurn, true);
+        assert.equal(intent!.textResponse, "", "empty textResponse is intentional");
+      },
+    },
+    {
+      name: "pure skip_proactive-as-text is recovered as shouldSkipProactive",
+      run: () => {
+        const leak = `{"skip_proactive":{"reason":"nothing to say right now"}}`;
+        const intent = extractIntentFromRawText(leak);
+        assert.ok(intent);
+        assert.equal(intent!.shouldSkipProactive, true);
+        assert.equal(intent!.skipReason, "nothing to say right now");
+      },
+    },
+    {
+      name: "pure end_turn-as-text is recovered as isEndTurn",
+      run: () => {
+        const leak = `{"end_turn":{}}`;
+        const intent = extractIntentFromRawText(leak);
+        assert.ok(intent);
+        assert.equal(intent!.isEndTurn, true);
+      },
+    },
+    {
       name: "flat classic schema (textResponse at top level) is returned",
       run: () => {
         const flat = JSON.stringify({

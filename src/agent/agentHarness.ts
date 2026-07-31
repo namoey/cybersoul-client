@@ -335,16 +335,15 @@ export class AgentHarness {
     ) {
       const recovered = extractIntentFromRawText(result.textResponse);
       if (recovered) {
-        // Merge recovered fields (textResponse, actionText, stateUpdate,
-        // ...) into the intent. toolCallsToIntent already populated
-        // whatever real tool calls existed (none in this branch), so a
-        // shallow merge is safe.
+        // Recovery is AUTHORITATIVE: merge its fields (textResponse,
+        // actionText, stateUpdate, shouldSkipInteract, isEndTurn, ...)
+        // and trust the result. A pure-signal payload like
+        // {"skip_turn":{"reason":...}} legitimately yields empty
+        // textResponse — that is NOT a reason to fall back to the raw
+        // JSON (which would leak it into the chat bubble / notification).
+        // Only fall back to raw content when recovery returns null
+        // (prose / malformed JSON) below.
         Object.assign(parsedIntent, recovered);
-        // If recovery still yielded no text, fall back to raw content so
-        // the turn isn't a total loss (matches legacy behavior).
-        if (!parsedIntent.textResponse || parsedIntent.textResponse.trim().length === 0) {
-          parsedIntent.textResponse = result.textResponse;
-        }
       } else {
         // Ordinary prose / reasoning — use as-is (last resort).
         parsedIntent.textResponse = result.textResponse;
@@ -401,10 +400,10 @@ export class AgentHarness {
     ) {
       const recovered = extractIntentFromRawText(result.textResponse);
       if (recovered) {
+        // Recovery is AUTHORITATIVE — see runInteractDispatchWithTools.
+        // A pure-signal payload (skip_proactive/end_turn) legitimately
+        // has empty textResponse; don't clobber it with the raw JSON.
         Object.assign(parsedIntent, recovered);
-        if (!parsedIntent.textResponse || parsedIntent.textResponse.trim().length === 0) {
-          parsedIntent.textResponse = result.textResponse;
-        }
       } else {
         parsedIntent.textResponse = result.textResponse;
       }
@@ -713,18 +712,28 @@ export class AgentHarness {
 
     // Fold all accumulated tool calls into the final intent.
     const parsedIntent = toolCallsToIntent(allToolCalls);
-    // Only fall back to the raw LLM `content` field when NO `speak` tool
-    // call populated intent.textResponse. For tool-calling models (e.g.
-    // DeepSeek reasoner/thinking mode), the `speak` tool's `text` arg is
-    // the canonical dialogue, while the raw `content` field may hold
-    // reasoning/preamble. Unconditionally overriding leaked that reasoning
-    // into reply.textResponse — which is what notifications read — even
-    // though the chat bubble (fed by the early streamed `speak` text)
-    // showed the correct line. Symptom: "notification shows reasoning
-    // text instead of the real final response."
+    // Same three-case logic as runInteractDispatchWithTools /
+    // runInteractDispatchStream / runProactiveDispatchWithTools (see the
+    // long comment there). The loop path MUST recover raw nested-JSON
+    // content too — it's the path cybersoul-chat actually uses
+    // (agentLoop: {maxIterations:5}), and the model sometimes emits the
+    // tool schema as text instead of structured tool_calls (e.g.
+    // {"skip_turn":{"reason":"..."}} or {"speak":{"text":...}}).
+    // Without this recovery the raw JSON leaks into textResponse →
+    // chat bubble + notification body.
     const speakText = parsedIntent.textResponse?.trim() ?? "";
     if (finalTextResponse && speakText.length === 0) {
-      parsedIntent.textResponse = finalTextResponse;
+      const recovered = extractIntentFromRawText(finalTextResponse);
+      if (recovered) {
+        // Recovery is AUTHORITATIVE — see runInteractDispatchWithTools.
+        // A pure-signal payload (skip_turn/end_turn) legitimately has
+        // empty textResponse; don't clobber it with the raw JSON
+        // (which would leak it into the chat bubble / notification).
+        Object.assign(parsedIntent, recovered);
+      } else {
+        // Ordinary prose / reasoning — use as-is (last resort).
+        parsedIntent.textResponse = finalTextResponse;
+      }
     }
 
     // Surface cap-hit via the onError hook for telemetry. Non-fatal —
@@ -844,10 +853,10 @@ export class AgentHarness {
     if (fullText && fullText.trim().length > 0 && speakText.length === 0) {
       const recovered = extractIntentFromRawText(fullText);
       if (recovered) {
+        // Recovery is AUTHORITATIVE — see runInteractDispatchWithTools.
+        // A pure-signal payload (skip_turn/end_turn) legitimately has
+        // empty textResponse; don't clobber it with the raw JSON.
         Object.assign(parsedIntent, recovered);
-        if (!parsedIntent.textResponse || parsedIntent.textResponse.trim().length === 0) {
-          parsedIntent.textResponse = fullText;
-        }
       } else {
         parsedIntent.textResponse = fullText;
       }

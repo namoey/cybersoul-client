@@ -45,3 +45,5 @@ export type {
 } from "./signalTools.js";
 
 export { toolCallsToIntent } from "./toolCallsToIntent.js";
+
+export { extractIntentFromRawText } from "./extractIntentFromRawText.js";

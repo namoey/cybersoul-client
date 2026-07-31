@@ -57,6 +57,7 @@ import {
   buildTriggerEventTool,
   buildUpdateStateTool,
   toolCallsToIntent,
+  extractIntentFromRawText,
 } from "../tools/index.js";
 import type {
   GenerateImageResult,
@@ -311,19 +312,43 @@ export class AgentHarness {
     const parsedIntent = toolCallsToIntent(result.toolCalls);
 
     // The model may emit text alongside tool calls (or as a pure-text
-    // reply with no tool calls). Preserve either — BUT prefer the
-    // `speak` tool's `text` arg when present: for tool-calling models
-    // (e.g. DeepSeek reasoner/thinking mode) the raw `content` field can
-    // hold reasoning/preamble while the actual dialogue lives in the
-    // speak tool call. Only fall back to raw content when no speak text
-    // was provided, otherwise that reasoning leaks into notifications.
+    // reply with no tool calls). Three cases to handle without leaking
+    // raw JSON or reasoning into the chat bubble / notification:
+    //
+    //   1. Model emitted proper tool calls with a `speak` → already
+    //      folded into parsedIntent.textResponse by toolCallsToIntent.
+    //      Do nothing — the raw `content` (which may be reasoning for
+    //      thinking-mode models like DeepSeek reasoner) must NOT
+    //      override it, or notifications show reasoning instead of the
+    //      real dialogue (cybersoul-chat bug 2026-07-31).
+    //   2. Model ignored the tool declarations and emitted the NESTED
+    //      tool-calling schema as plain text (e.g.
+    //      `{"speak":{"text":...},"update_state":{...}}`). Recover it
+    //      via extractIntentFromRawText so it doesn't leak as raw JSON.
+    //   3. Model emitted ordinary prose / reasoning with no speak text
+    //      → fall back to raw content as textResponse (last resort).
     const speakText = parsedIntent.textResponse?.trim() ?? "";
     if (
       typeof result.textResponse === "string" &&
       result.textResponse.trim().length > 0 &&
       speakText.length === 0
     ) {
-      parsedIntent.textResponse = result.textResponse;
+      const recovered = extractIntentFromRawText(result.textResponse);
+      if (recovered) {
+        // Merge recovered fields (textResponse, actionText, stateUpdate,
+        // ...) into the intent. toolCallsToIntent already populated
+        // whatever real tool calls existed (none in this branch), so a
+        // shallow merge is safe.
+        Object.assign(parsedIntent, recovered);
+        // If recovery still yielded no text, fall back to raw content so
+        // the turn isn't a total loss (matches legacy behavior).
+        if (!parsedIntent.textResponse || parsedIntent.textResponse.trim().length === 0) {
+          parsedIntent.textResponse = result.textResponse;
+        }
+      } else {
+        // Ordinary prose / reasoning — use as-is (last resort).
+        parsedIntent.textResponse = result.textResponse;
+      }
     }
 
     return { parsedIntent };
@@ -356,39 +381,33 @@ export class AgentHarness {
     let parsedIntent = toolCallsToIntent(result.toolCalls);
 
     // Defensive fallback: if the LLM returned NO tool calls but DID
-    // return text that looks like JSON (happens when the model ignores
-    // the tool declarations and outputs JSON directly), try to parse
-    // it as a classic JSON intent. This prevents raw JSON from leaking
-    // into the chat as a proactive message.
+    // return text content, try to recover an intent from it. Two sub-
+    // cases (both handled by extractIntentFromRawText):
+    //   - NESTED tool-calling schema emitted inline, e.g.
+    //     `{"speak":{"text":...},"update_state":{...}}` — the helper
+    //     synthesizes tool calls and reads `speak.text` (the OLD code
+    //     here only read flat `jsonIntent.textResponse`, which doesn't
+    //     exist on the nested shape → raw JSON leaked into the proactive
+    //     message).
+    //   - FLAT classic schema (`{"textResponse":...}`).
+    // If recovery fails (ordinary prose / malformed), and there's no
+    // speak text from real tool calls, fall back to raw content as a
+    // last resort — then let the implicit-skip check below decide.
+    const speakText = parsedIntent.textResponse?.trim() ?? "";
     if (
-      result.toolCalls.length === 0 &&
-      typeof result.textResponse === "string" &&
-      result.textResponse.trim().startsWith("{")
-    ) {
-      try {
-        const jsonIntent = JSON.parse(result.textResponse);
-        if (jsonIntent && typeof jsonIntent === "object") {
-          parsedIntent = {
-            ...parsedIntent,
-            ...jsonIntent,
-          };
-          // Clear the textResponse so the raw JSON doesn't leak —
-          // it will be re-read from the parsed intent below.
-          parsedIntent.textResponse = jsonIntent.textResponse || "";
-        }
-      } catch {
-        // Not valid JSON — leave parsedIntent as-is (empty textResponse
-        // → treated as implicit skip below).
-      }
-    } else if (
       typeof result.textResponse === "string" &&
       result.textResponse.trim().length > 0 &&
-      (parsedIntent.textResponse?.trim() ?? "").length === 0
+      speakText.length === 0
     ) {
-      // Prefer the `speak` tool's `text` arg over raw `content` (which
-      // may be reasoning/preamble for thinking-mode models). See note in
-      // runInteractDispatchWithTools above.
-      parsedIntent.textResponse = result.textResponse;
+      const recovered = extractIntentFromRawText(result.textResponse);
+      if (recovered) {
+        Object.assign(parsedIntent, recovered);
+        if (!parsedIntent.textResponse || parsedIntent.textResponse.trim().length === 0) {
+          parsedIntent.textResponse = result.textResponse;
+        }
+      } else {
+        parsedIntent.textResponse = result.textResponse;
+      }
     }
 
     if (parsedIntent.shouldSkipProactive) {
@@ -814,7 +833,25 @@ export class AgentHarness {
 
     // Fold accumulated tool calls into the intent.
     const parsedIntent = toolCallsToIntent(allToolCalls);
-    if (fullText) parsedIntent.textResponse = fullText;
+
+    // Same three-case logic as runInteractDispatchWithTools (see the
+    // long comment there). The streaming path additionally MUST NOT
+    // unconditionally clobber a speak-populated textResponse with the
+    // streamed `fullText`, because for thinking-mode models that
+    // fullText is reasoning/preamble, not the real dialogue — which
+    // is exactly what leaked into notifications before this guard.
+    const speakText = parsedIntent.textResponse?.trim() ?? "";
+    if (fullText && fullText.trim().length > 0 && speakText.length === 0) {
+      const recovered = extractIntentFromRawText(fullText);
+      if (recovered) {
+        Object.assign(parsedIntent, recovered);
+        if (!parsedIntent.textResponse || parsedIntent.textResponse.trim().length === 0) {
+          parsedIntent.textResponse = fullText;
+        }
+      } else {
+        parsedIntent.textResponse = fullText;
+      }
+    }
 
     return { parsedIntent };
   }

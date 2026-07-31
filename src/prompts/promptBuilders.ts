@@ -8,6 +8,11 @@ import { resolveTimeContext, getElapsedTimeInfo } from "../utils/time.utils.js";
 import { normalizeOngoingSceneState } from "../utils/state.utils.js";
 import { formatHistoryEntries } from "../utils/history.utils.js";
 import { buildImageJsonSchemaString } from "./image.js";
+import {
+  buildEventJsonSchemaString,
+  EVENT_POLICY_PROMPT as SHARED_EVENT_POLICY,
+  getOutfitSelectionPrompt as sharedGetOutfitSelectionPrompt,
+} from "./event.js";
 import type {
   ConsolidationPromptInputs,
   InteractPromptInputs,
@@ -101,15 +106,8 @@ export function getImageSchemaParams(allowed: boolean): string {
 }
 
 export function getEventSchemaParams(userName?: string): string {
-  const name = userName || "the user";
-  return `"eventTitle": "CRITICAL: Must include BOTH ‘WHAT to do’ AND ‘WITH WHOM’ (use the user's specific name if known, e.g., 'Having coffee with ${name}'). DO NOT use your own character name in the title! If you don't explicitly include WITH WHOM the event is by name, it is a hard failure.",
-    "eventDescription": "e.g. 'Meeting at the cafe, chatting about life' (Detailed description of the event and virtual scene)",
-    "scheduledDateStr": "YYYY-MM-DD (Optional. If the user specifies a future date like 'tomorrow', 'Saturday', or 'next week', calculate the exact calendar date based on the 'Current time' provided in the context and output it here. Otherwise, return null)",
-    "scheduledStartTimeStr": "HH:MM (Optional, 24-hour format if a specific time is agreed upon, e.g., '14:30', otherwise null)",
-    "durationMins": 60,
-    "outfitId": "Wardrobe ID. Provide ONLY if the user explicitly requested an outfit change OR if the new activity conflicts with the current outfit context (e.g., SLEEPWEAR at home -> going outside). Otherwise, use null."`;
+  return buildEventJsonSchemaString(userName);
 }
-
 export function getVoiceSchemaParams(): string {
   // Only reached when no dynamic_params are configured on the voice model.
   // Configure dynamic_params in DB to match the TTS provider; this fallback is provider-agnostic.
@@ -166,14 +164,12 @@ export function getVoiceDirectorInstruction(state: CharacterState): string {
 /* -------------------------------------------------------------------------- */
 
 export function getOutfitSelectionPrompt(): string {
-  return `When generating a triggerEvent, you MUST provide a suitable 'triggerEvent.outfitId' if the VERY LAST USER MESSAGE explicitly asks for an outfit change, OR if the new activity implies a context/location shift that conflicts with the current outfit (e.g., currently in SLEEPWEAR at home but going outside). Otherwise, keep it null. When changing outfits, match it to the event's activity, environment, and relationship stage (e.g., CASUAL, COSTUME, INTIMATE, SLEEPWEAR, etc.).`;
+  return sharedGetOutfitSelectionPrompt();
 }
 
 export function getTriggerEventPolicyPrompt(): string {
-  return `- Include 'triggerEvent' only if the VERY LAST USER MESSAGE proposes a new activity/hangout AND you accept the invitation, explicitly requests an outfit change AND you agree, or proposes intimate/romantic actions AND you agree; ignore older history. DO NOT include it if you decline or reject the proposal.
-    REPETITION GATE (hard): Prior assistant turns that already auto-triggered an event are tagged with a [Triggered Event: ...] marker in '[CHAT HISTORY]'. If such a marker already exists for the SAME activity the VERY LAST USER MESSAGE is referring to (e.g. it is just acknowledging, hurrying, confirming, or continuing an already-accepted outing), set 'triggerEvent' to null. Only emit a NEW 'triggerEvent' when the user proposes a genuinely DIFFERENT activity that has not already been triggered. Do NOT re-trigger the same event just because the conversation continues. ${getOutfitSelectionPrompt()}`;
+  return SHARED_EVENT_POLICY;
 }
-
 export function getOutfitAcquisitionPolicyPrompt(): string {
   return `- Outfit acquisition (giftOutfit): set 'giftOutfit' to { "descriptionText": "short outfit description" } when a genuinely NEW outfit (one that is NOT already in the Available Wardrobe) is obtained THIS turn, triggered by EITHER:
     (a) USER-GIFTED: the VERY LAST USER MESSAGE expresses gift/buy/add-clothes intent for you (e.g. "I bought you a dress", "here, wear this new outfit", "adding some lingerie to your closet").

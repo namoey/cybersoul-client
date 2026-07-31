@@ -11,6 +11,10 @@
 
 import type { Tool } from "../agent/types.js";
 import type { DispatcherIntent } from "../types.js";
+import {
+  EVENT_TOOL_DESCRIPTION,
+  buildEventToolInputSchema,
+} from "../prompts/event.js";
 
 export interface TriggerEventResult {
   /** Always `undefined` today — the legacy path doesn't surface the created event back. Here for Phase 2 observability. */
@@ -30,20 +34,8 @@ export function buildTriggerEventTool(): Tool<
 > {
   return {
     name: "trigger_event",
-    description:
-      "Auto-trigger an on-demand event the character accepted during this turn. Side-effect only; failure is logged and swallowed.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        eventTitle: { type: "string" },
-        eventDescription: { type: "string" },
-        durationMins: { type: "number" },
-        outfitId: { type: ["string", "null"] },
-        scheduledStartTimeStr: { type: ["string", "null"] },
-        scheduledDateStr: { type: ["string", "null"] },
-      },
-      required: ["eventDescription"],
-    },
+    description: EVENT_TOOL_DESCRIPTION,
+    inputSchema: buildEventToolInputSchema(),
     async execute(args, ctx) {
       try {
         await ctx.api.triggerOndemandEvent({

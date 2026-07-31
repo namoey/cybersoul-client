@@ -455,12 +455,13 @@ export class CyberSoulClient {
   private buildTurnToolRegistry(
     sink: EventStream,
     extraTools: Tool[] = [],
+    state?: CharacterState,
   ): ToolRegistry {
     return new ToolRegistry([
       speakTool,
       buildUpdateStateTool(),
       buildGenerateImageTool(sink),
-      buildGenerateVoiceTool(sink),
+      buildGenerateVoiceTool(sink, state),
       buildTriggerEventTool(),
       buildGiftOutfitTool(sink),
       likePictureTool,
@@ -737,14 +738,14 @@ export class CyberSoulClient {
       let parsedIntent: DispatcherIntent;
       let loopDispatchedTools: Set<string> | undefined;
       if (useStreaming) {
-        const registry = this.buildTurnToolRegistry(sink, params.extraTools);
+        const registry = this.buildTurnToolRegistry(sink, params.extraTools, ctx.state);
         const declarations = registry.buildToolDeclarations();
         ({ parsedIntent } = await harness.runInteractDispatchStream(
           promptMessages,
           declarations,
         ));
       } else if (useToolCalling) {
-        const registry = this.buildTurnToolRegistry(sink, params.extraTools);
+        const registry = this.buildTurnToolRegistry(sink, params.extraTools, ctx.state);
         const declarations = registry.buildToolDeclarations();
         const toolCtx = this.buildToolContext(ctx.state, params);
         if (loopConfig) {
@@ -1016,7 +1017,7 @@ export class CyberSoulClient {
       const decision = useToolCalling
         ? await harness.runProactiveDispatchWithTools(
             promptMessages,
-            this.buildTurnToolRegistry(sink, params.extraTools).buildToolDeclarations(),
+            this.buildTurnToolRegistry(sink, params.extraTools, ctx.state).buildToolDeclarations(),
           )
         : await harness.runProactiveDispatch(promptMessages);
       if (decision.kind === "skip") {

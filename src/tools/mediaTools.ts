@@ -21,7 +21,7 @@
  */
 
 import type { Tool, ToolFailure, AgentEventSink } from "../agent/types.js";
-import type { MediaReadyPayload } from "../types.js";
+import type { MediaReadyPayload, VoiceModelState } from "../types.js";
 import type { EventStream } from "../agent/eventStream.js";
 import {
   CyberSoulError,
@@ -177,24 +177,66 @@ export function buildGenerateImageTool(
  * `textForVoice` is passed in via args by the harness (which already
  * has the resolved text response). Keeping the sanitization + fallback
  * here means the tool owns everything voice-specific.
+ *
+ * When `state.voice_model.dynamic_params` is configured, the tool's
+ * `dynamicArgs` schema is enriched with the exact field names +
+ * descriptions from the DB — mirroring what the legacy
+ * `getVoiceSchemaFromState()` embedded in the JSON schema prompt.
+ * The `dynamic_param_prompt_template` (voice director instruction)
+ * is appended to the tool description so the LLM knows HOW to choose
+ * voice parameters.
  */
 export function buildGenerateVoiceTool(
   sink: AgentEventSink,
+  state?: { voice_model?: VoiceModelState | null },
 ): Tool<
   { textForVoice: string; dynamicArgs: Record<string, unknown> },
   GenerateVoiceResult
 > {
+  const dynamicParams = state?.voice_model?.dynamic_params;
+  const directorInstruction =
+    state?.voice_model?.dynamic_param_prompt_template?.trim() ||
+    "Analyze the text according to the character's relationship stage and emotional inertia to determine the best dynamic voice parameters for TTS.";
+
+  // Build the dynamicArgs properties from the voice model config, or
+  // fall back to a generic schema (mirrors getVoiceSchemaParams).
+  const dynamicArgsProperties: Record<string, any> = {};
+  if (dynamicParams && dynamicParams.length > 0) {
+    for (const p of dynamicParams) {
+      dynamicArgsProperties[p.name] = {
+        type: p.type || "string",
+        description: p.required
+          ? `${p.description} (required)`
+          : `${p.description} (optional)`,
+      };
+    }
+  } else {
+    dynamicArgsProperties.style_instruction = {
+      type: "string",
+      description: "How the line should be spoken (required)",
+    };
+  }
+
   return {
     name: "generate_voice",
     description:
-      "Synthesize voice audio from the resolved text response. The harness passes the already-resolved text; the tool sanitizes it for TTS and dispatches.",
+      `Synthesize voice audio from text. Pass the character's reply text in textForVoice. ` +
+      `Voice direction: ${directorInstruction} ` +
+      `Fill all the dynamicArgs fields to control the voice style — these map to the TTS provider's parameters.`,
     inputSchema: {
       type: "object",
       properties: {
-        textForVoice: { type: "string" },
-        dynamicArgs: { type: "object" },
+        textForVoice: {
+          type: "string",
+          description: "The text to synthesize into speech (the character's reply).",
+        },
+        dynamicArgs: {
+          type: "object",
+          description: "TTS voice parameters. Fill ALL fields for best quality.",
+          properties: dynamicArgsProperties,
+        },
       },
-      required: ["textForVoice"],
+      required: ["textForVoice", "dynamicArgs"],
     },
     async execute(args, ctx) {
       const result: GenerateVoiceResult = {};

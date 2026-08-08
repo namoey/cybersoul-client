@@ -23,6 +23,11 @@ import type {
   OngoingSceneState,
 } from "../types.js";
 import { normalizeOngoingSceneState } from "../utils/state.utils.js";
+import {
+  STATE_FIELDS,
+  ONGOING_SCENE_FIELDS,
+  USER_ANALYSIS_CATEGORIES,
+} from "../prompts/intent.js";
 
 /**
  * Build the PATCH payload exactly as the legacy
@@ -91,19 +96,19 @@ export function buildUpdateStateTool(): Tool<
           properties: {
             temperatureDelta: {
               type: "number",
-              description: "Small integer: positive +1, negative -1, neutral 0. Mood shifts must be slow (max ±5 per turn).",
+              description: STATE_FIELDS.temperatureDelta.toolDescription,
             },
             userNickname: {
               type: "string",
-              description: "How the character addresses the user (e.g., '老公', '哥哥').",
+              description: STATE_FIELDS.userNickname.toolDescription,
             },
             agentNickname: {
               type: "string",
-              description: "How the user addresses the character.",
+              description: STATE_FIELDS.agentNickname.toolDescription,
             },
             talkingStyle: {
               type: "string",
-              description: "Current speaking style (e.g., '温柔乖巧', '俏皮撒娇').",
+              description: STATE_FIELDS.talkingStyle.toolDescription,
             },
             ongoingScene: {
               type: ["object", "string", "null"],
@@ -111,11 +116,11 @@ export function buildUpdateStateTool(): Tool<
               properties: {
                 scene: {
                   type: "string",
-                  description: "Current physical scene/activity (e.g., '沙发上窝着追剧').",
+                  description: ONGOING_SCENE_FIELDS.scene,
                 },
                 outfit: {
                   type: "string",
-                  description: "Current outfit wording; use 'naked' when applicable.",
+                  description: ONGOING_SCENE_FIELDS.outfit,
                 },
               },
             },
@@ -133,7 +138,7 @@ export function buildUpdateStateTool(): Tool<
                 properties: {
                   category: {
                     type: "string",
-                    enum: ["realName", "occupation", "age", "gender", "hobby", "trait", "communicationStyle", "boundary", "preference"],
+                    enum: [...USER_ANALYSIS_CATEGORIES],
                     description: "Fact category. 'preference' = explicit user likes/dislikes. 'boundary' = explicit rejections.",
                   },
                   value: {

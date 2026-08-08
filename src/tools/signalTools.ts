@@ -18,6 +18,10 @@
 
 import type { Tool } from "../agent/types.js";
 import type { InteractMetadata } from "../types.js";
+import {
+  TEXT_RESPONSE_DESCRIPTION,
+  ACTION_TEXT_DESCRIPTION,
+} from "../prompts/intent.js";
 
 /**
  * `speak` — the character's spoken line + scene action text. The two
@@ -43,13 +47,11 @@ export const speakTool: Tool<
     properties: {
       text: {
         type: "string",
-        description:
-          "Spoken dialogue ONLY. Never include actions or parentheses. This is what the character says out loud.",
+        description: TEXT_RESPONSE_DESCRIPTION,
       },
       actionText: {
         type: "string",
-        description:
-          "(Scene descriptions, physical actions, expressions, inner feelings) ONLY. Never include spoken dialogue here.",
+        description: ACTION_TEXT_DESCRIPTION,
       },
     },
     required: ["text"],

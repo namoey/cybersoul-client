@@ -9,6 +9,7 @@
 
 import type { Tool, AgentEventSink } from "../agent/types.js";
 import type { OutfitGiftedPayload } from "../types.js";
+import { GIFT_OUTFIT_DESCRIPTION_TEXT_DESCRIPTION } from "../prompts/intent.js";
 
 export interface GiftOutfitResult {
   /** Populated when an outfit was actually gifted; `undefined` when there was nothing to gift or the write failed. */
@@ -35,7 +36,7 @@ export function buildGiftOutfitTool(
       properties: {
         descriptionText: {
           type: "string",
-          description: "Concise description of the newly acquired outfit to add into wardrobe.",
+          description: GIFT_OUTFIT_DESCRIPTION_TEXT_DESCRIPTION,
         },
       },
       required: ["descriptionText"],

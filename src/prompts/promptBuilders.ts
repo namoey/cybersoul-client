@@ -13,6 +13,13 @@ import {
   EVENT_POLICY_PROMPT as SHARED_EVENT_POLICY,
   getOutfitSelectionPrompt as sharedGetOutfitSelectionPrompt,
 } from "./event.js";
+import {
+  TEXT_RESPONSE_JSON_HINT,
+  ACTION_TEXT_JSON_HINT,
+  GIFT_OUTFIT_DESCRIPTION_TEXT_DESCRIPTION,
+  buildStateUpdateJsonHint,
+  buildUserAnalysisJsonHint,
+} from "./intent.js";
 import type {
   ConsolidationPromptInputs,
   InteractPromptInputs,
@@ -594,12 +601,12 @@ When you DO skip: ${embedJsonSchemaHint ? 'set "shouldSkipInteract": true, set "
     ? `Output JSON Schema:
 {
   ${allowSkip ? `"shouldSkipInteract": false,\n  "skipReason": null,` : `"shouldSkipInteract": null,`}
-  "actionText": "(Scene descriptions, physical actions, expressions, inner feelings) ONLY. Never include spoken dialogue here.",
-  "textResponse": "Spoken dialogue ONLY. Never include actions or parentheses.",
+  "actionText": "${ACTION_TEXT_JSON_HINT}",
+  "textResponse": "${TEXT_RESPONSE_JSON_HINT}",
   "likePreviousPicture": false,
-  "stateUpdate": { "temperatureDelta": 1, "userNickname": "How character addresses user", "agentNickname": "How user addresses character", "talkingStyle": "Current speaking style", "ongoingScene": { "scene": "Current physical scene/activity", "outfit": "Current outfit wording; use 'naked' when applicable" } },
-  "giftOutfit": { "descriptionText": "Concise description of the newly acquired outfit to add into wardrobe." },
-  "userAnalysis": { "newFactsLearned": [{ "category": "realName|occupation|age|gender|hobby|trait|communicationStyle|boundary|preference", "value": "explicit new user fact about the human from THEIR VERY LAST MESSAGE" }] },
+  ${buildStateUpdateJsonHint()},
+  "giftOutfit": { "descriptionText": "${GIFT_OUTFIT_DESCRIPTION_TEXT_DESCRIPTION}" },
+  ${buildUserAnalysisJsonHint()},
   "isEndTurn": false,
   "triggerEvent": {
     ${getEventSchemaParams(state.dynamic_context?.userNickname)}

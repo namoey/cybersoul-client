@@ -41,8 +41,16 @@ export const speakTool: Tool<
   inputSchema: {
     type: "object",
     properties: {
-      text: { type: "string" },
-      actionText: { type: "string" },
+      text: {
+        type: "string",
+        description:
+          "Spoken dialogue ONLY. Never include actions or parentheses. This is what the character says out loud.",
+      },
+      actionText: {
+        type: "string",
+        description:
+          "(Scene descriptions, physical actions, expressions, inner feelings) ONLY. Never include spoken dialogue here.",
+      },
     },
     required: ["text"],
   },

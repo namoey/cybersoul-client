@@ -33,7 +33,10 @@ export function buildGiftOutfitTool(
     inputSchema: {
       type: "object",
       properties: {
-        descriptionText: { type: "string" },
+        descriptionText: {
+          type: "string",
+          description: "Concise description of the newly acquired outfit to add into wardrobe.",
+        },
       },
       required: ["descriptionText"],
     },

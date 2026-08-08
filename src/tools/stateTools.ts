@@ -87,24 +87,63 @@ export function buildUpdateStateTool(): Tool<
       properties: {
         stateUpdate: {
           type: "object",
+          description: "Relationship temperature, scene, nicknames. Cannot be null.",
           properties: {
-            temperatureDelta: { type: ["string", "number"] },
-            userNickname: { type: "string" },
-            agentNickname: { type: "string" },
-            talkingStyle: { type: "string" },
+            temperatureDelta: {
+              type: "number",
+              description: "Small integer: positive +1, negative -1, neutral 0. Mood shifts must be slow (max ±5 per turn).",
+            },
+            userNickname: {
+              type: "string",
+              description: "How the character addresses the user (e.g., '老公', '哥哥').",
+            },
+            agentNickname: {
+              type: "string",
+              description: "How the user addresses the character.",
+            },
+            talkingStyle: {
+              type: "string",
+              description: "Current speaking style (e.g., '温柔乖巧', '俏皮撒娇').",
+            },
             ongoingScene: {
               type: ["object", "string", "null"],
+              description: "Track current physical scene and outfit. Keep same by default; change only if scene implies changing clothes.",
               properties: {
-                scene: { type: "string" },
-                outfit: { type: "string" },
+                scene: {
+                  type: "string",
+                  description: "Current physical scene/activity (e.g., '沙发上窝着追剧').",
+                },
+                outfit: {
+                  type: "string",
+                  description: "Current outfit wording; use 'naked' when applicable.",
+                },
               },
             },
           },
         },
         userAnalysis: {
           type: "object",
+          description: "Extract facts ONLY about the HUMAN USER from their VERY LAST MESSAGE. Do NOT extract facts about yourself. Exclude transient activities.",
           properties: {
-            newFactsLearned: { type: "array" },
+            newFactsLearned: {
+              type: "array",
+              description: "Add only explicit new user facts from this turn (no inference). If none, omit.",
+              items: {
+                type: "object",
+                properties: {
+                  category: {
+                    type: "string",
+                    enum: ["realName", "occupation", "age", "gender", "hobby", "trait", "communicationStyle", "boundary", "preference"],
+                    description: "Fact category. 'preference' = explicit user likes/dislikes. 'boundary' = explicit rejections.",
+                  },
+                  value: {
+                    type: "string",
+                    description: "The explicit new user fact from THEIR VERY LAST MESSAGE.",
+                  },
+                },
+                required: ["category", "value"],
+              },
+            },
           },
         },
       },

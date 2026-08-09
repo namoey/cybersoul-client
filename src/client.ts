@@ -57,7 +57,7 @@ import { CyberSoulApi } from "./api/cyberSoulApi.js";
 // These are PRIVATE; not re-exported through src/contract/.
 import { ContextManager } from "./agent/contextManager.js";
 import { EventStream } from "./agent/eventStream.js";
-import { AgentHarness } from "./agent/agentHarness.js";
+import { AgentHarness, type DispatchResult } from "./agent/agentHarness.js";
 import { HistoryCompactor } from "./agent/historyCompactor.js";
 import type { ToolContext, Tool, AgentLoopConfig } from "./agent/types.js";
 import { buildStatePatchPayload } from "./tools/stateTools.js";
@@ -737,6 +737,7 @@ export class CyberSoulClient {
       const loopConfig = this.resolveAgentLoopConfig(params.agentLoop);
       let parsedIntent: DispatcherIntent;
       let loopDispatchedTools: Set<string> | undefined;
+      let loopMedia: DispatchResult["loopMedia"];
       if (useStreaming) {
         const registry = this.buildTurnToolRegistry(sink, params.extraTools, ctx.state);
         const declarations = registry.buildToolDeclarations();
@@ -752,7 +753,7 @@ export class CyberSoulClient {
           // Phase 3.3 — multi-step agent loop. The loop dispatches
           // side-effect tools inline (image, voice, etc.) and tracks
           // which ones ran so the side-effect layer skips them.
-          ({ parsedIntent, loopDispatchedTools } =
+          ({ parsedIntent, loopDispatchedTools, loopMedia } =
             await harness.runInteractDispatchLoop(
               promptMessages,
               declarations,
@@ -857,12 +858,16 @@ export class CyberSoulClient {
         status: "success",
         textResponse: resolvedTextResponse || "...",
         actionText: parsedIntent.actionText || "",
-        imageUrl: media.imageUrl,
-        imageMediaId: media.imageMediaId,
-        audioUrl: media.audioUrl,
-        audioMediaId: media.audioMediaId,
+        // When the loop dispatched media inline, the side-effect layer
+        // skipped those tools. Use the loop's captured results so the
+        // final response carries the correct URLs. Fall back to the
+        // side-effect layer's results for the classic/single-shot path.
+        imageUrl: loopMedia?.imageUrl ?? media.imageUrl,
+        imageMediaId: loopMedia?.imageMediaId ?? media.imageMediaId,
+        audioUrl: loopMedia?.audioUrl ?? media.audioUrl,
+        audioMediaId: loopMedia?.audioMediaId ?? media.audioMediaId,
         likePreviousPicture: parsedIntent.likePreviousPicture,
-        durationSec: media.durationSec,
+        durationSec: loopMedia?.durationSec ?? media.durationSec,
         // triggeredEvent stays sourced from parsedIntent (not the tool result)
         // to match the legacy response shape — the tool's `triggered` return
         // value is for Phase 2 observability only.
@@ -872,7 +877,7 @@ export class CyberSoulClient {
         isEndTurn: parsedIntent.isEndTurn,
         persistedDynamicContext,
         mediaError,
-        giftedOutfit: media.giftedOutfit,
+        giftedOutfit: loopMedia?.giftedOutfit ?? media.giftedOutfit,
       };
     } catch (error: any) {
       // Typed SDK errors (insufficient points, wallet failure, auth, etc.)

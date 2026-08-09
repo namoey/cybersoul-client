@@ -96,6 +96,22 @@ export interface DispatchResult {
    * run all media.
    */
   loopDispatchedTools?: Set<string>;
+  /**
+   * Phase 3.3.1 — media URLs generated inline by the loop. When the
+   * loop dispatches generate_image/generate_voice, the results are
+   * captured here so the client can populate the final
+   * InteractResponse without re-running the side-effect layer.
+   * The side-effect layer SKIPS these tools (via loopDispatchedTools),
+   * so without this capture the URLs would be lost.
+   */
+  loopMedia?: {
+    imageUrl?: string;
+    imageMediaId?: string;
+    audioUrl?: string;
+    audioMediaId?: string;
+    durationSec?: number;
+    giftedOutfit?: OutfitGiftedPayload;
+  };
 }
 
 /**
@@ -500,6 +516,16 @@ export class AgentHarness {
     // Track which side-effect tools the loop already executed so the
     // client can skip re-running them.
     const loopDispatchedTools = new Set<string>();
+    // Capture media results from inline tool dispatches so the client
+    // can populate the final response without re-running side-effects.
+    const loopMedia: {
+      imageUrl?: string;
+      imageMediaId?: string;
+      audioUrl?: string;
+      audioMediaId?: string;
+      durationSec?: number;
+      giftedOutfit?: OutfitGiftedPayload;
+    } = {};
     // Track whether text-ready has been emitted so a second speak
     // call (in a subsequent iteration) doesn't create a duplicate
     // text bubble. The first speak emits text-ready; subsequent
@@ -647,6 +673,23 @@ export class AgentHarness {
             );
             resultStr = JSON.stringify(r);
 
+            // Capture media/gift results from inline dispatches so the
+            // client can populate the final response without re-running
+            // the side-effect layer (which skips these tools).
+            if (call.name === "generate_image" && r) {
+              const ir = r as GenerateImageResult;
+              if (ir.imageUrl) loopMedia.imageUrl = ir.imageUrl;
+              if (ir.imageMediaId) loopMedia.imageMediaId = ir.imageMediaId;
+            } else if (call.name === "generate_voice" && r) {
+              const vr = r as GenerateVoiceResult;
+              if (vr.audioUrl) loopMedia.audioUrl = vr.audioUrl;
+              if (vr.audioMediaId) loopMedia.audioMediaId = vr.audioMediaId;
+              if (vr.durationSec) loopMedia.durationSec = vr.durationSec;
+            } else if (call.name === "gift_outfit" && r) {
+              const gr = r as GiftOutfitResult;
+              if (gr.giftedOutfit) loopMedia.giftedOutfit = gr.giftedOutfit;
+            }
+
             // Track that this tool was dispatched by the loop so the
             // client doesn't re-emit text-ready (for speak), re-PATCH
             // state (for update_state), or re-run side-effects
@@ -752,7 +795,7 @@ export class AgentHarness {
       });
     }
 
-    return { parsedIntent, loopDispatchedTools };
+    return { parsedIntent, loopDispatchedTools, loopMedia };
   }
 
   /* ============================================================ */

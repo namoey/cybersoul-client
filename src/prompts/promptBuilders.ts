@@ -589,7 +589,7 @@ Reasons you MAY choose to skip (not reply):
   - YOUR personality / current mood / relationship state makes silence the authentic reaction (e.g., you're upset, distant, or the trust is too low to engage).
 
 When in doubt: REPLY. Skipping is the rare exception, not the rule. Never skip just because the message is short or you're unsure what to say — if the user is clearly engaging you, engage back. Skipping must always be a deliberate, in-character choice.
-When you DO skip: ${embedJsonSchemaHint ? 'set "shouldSkipInteract": true, set "skipReason" to one short sentence (for diagnostics only — never shown to the user), and set every other field to null. Do NOT produce text, media, or a stateUpdate.' : 'use the skip_turn tool with a brief reason. Do NOT use any other tools — no speak, no media, no state update.'}`
+When you DO skip: ${embedJsonSchemaHint ? 'set the field named EXACTLY "shouldSkipInteract" (the full camelCase name — never abbreviate it to "skip", "shouldSkip", or any other variant) to true, set "skipReason" to one short sentence (for diagnostics only — never shown to the user), and set every other field to null. Do NOT produce text, media, or a stateUpdate.' : 'use the tool named EXACTLY "skip_turn" (two words joined by an underscore) with a brief "reason" argument. The literal name "skip_turn" is the ONLY recognized form — never abbreviate it to "skip", "skipTurn", or anything else. Do NOT use any other tools — no speak, no media, no state update.'}`
     : "";
 
   // The schema hint block — ONLY for the classic JSON-dispatcher path.
@@ -614,7 +614,7 @@ When you DO skip: ${embedJsonSchemaHint ? 'set "shouldSkipInteract": true, set "
   ${getImageSchemaParams(requestedOthers.includes(InteractRequestType.IMAGE))},
   ${getVoiceSchemaFromState(state, requestedOthers.includes(InteractRequestType.VOICE))}
 }
-Note: Always include "isEndTurn". If "imageParams", "voiceArgs", "triggerEvent", "giftOutfit", or "userAnalysis" are not needed, set them to null. "stateUpdate" cannot be null.${allowSkip ? ' If "shouldSkipInteract" is true, set "skipReason" to one short sentence and set EVERY other field to null (no textResponse, no stateUpdate, no media).' : ''} Return valid raw JSON only.`
+Note: Always include "isEndTurn". If "imageParams", "voiceArgs", "triggerEvent", "giftOutfit", or "userAnalysis" are not needed, set them to null. "stateUpdate" cannot be null.${allowSkip ? ' To skip, use the EXACT field name "shouldSkipInteract" (never "skip" or any shorthand) set to true, with "skipReason" as one short sentence, and set EVERY other field to null (no textResponse, no stateUpdate, no media).' : ''} Return valid raw JSON only.`
     : "";
 
   // The intro line differs between paths:
@@ -622,7 +622,7 @@ Note: Always include "isEndTurn". If "imageParams", "voiceArgs", "triggerEvent",
   // - Agent: "respond using the available tools." (references native tools)
   const introLine = embedJsonSchemaHint
     ? `The user has sent a message. You must evaluate the context and the user's message, and return a JSON object (no markdown formatting) that dictates the character's multi-modal response.`
-    : `The user has sent a message. Respond using the available tools — ALL tools you need for this turn must be called NOW in a single response. Do NOT defer ("let me send you X in a second") — there is no second turn. If the user asked for a photo or voice, call "generate_image" and/or "generate_voice" in THIS response alongside "speak". Use "speak" for your reply text + action text. Use "update_state" to adjust the relationship temperature or scene. Use "skip_turn" only when you choose not to reply. Do NOT output JSON or plain text as your message content — always use the tools.`;
+    : `The user has sent a message. Respond using the available tools — ALL tools you need for this turn must be called NOW in a single response. Do NOT defer ("let me send you X in a second") — there is no second turn. If the user asked for a photo or voice, call "generate_image" and/or "generate_voice" in THIS response alongside "speak". Use "speak" for your reply text + action text. Use "update_state" to adjust the relationship temperature or scene. Use the "skip_turn" tool — exactly that literal name, never abbreviated to "skip" or anything else — only when you choose not to reply. Do NOT output JSON or plain text as your message content — always use the tools.`;
 
   return `${buildStateContextPrompt(state, {
     systemPromptFragment: inputs.systemPromptFragment,
@@ -707,7 +707,7 @@ export function buildProactiveSystemPrompt(
   // Agent path uses native tool declarations + constrained decoding.
   const schemaHint = embedJsonSchemaHint
     ? `Output ONLY a valid JSON object matching exactly this structure (no markdown wrappers).
-If "shouldSkipProactive" is true, set "skipReason" to one short sentence and set every other field to null.
+To skip, use the EXACT field name "shouldSkipProactive" (the full camelCase name — never "skip" or any shorthand) set to true, with "skipReason" as one short sentence, and set every other field to null.
 If "shouldSkipProactive" is false, "textResponse" is required and "stateUpdate" must be provided; include "ongoingScene" only if your scene/outfit actually changed, otherwise omit it.
 {
   "shouldSkipProactive": false,
@@ -719,7 +719,7 @@ If "shouldSkipProactive" is false, "textResponse" is required and "stateUpdate" 
   ${getImageSchemaParams(imageAllowed)},
   "voiceArgs": null
 }`
-    : `Decide whether to reach out using the available tools. If you decide to reach out, use the "speak" tool for your message + action text. If you decide NOT to reach out, use the "skip_proactive" tool. Do NOT output JSON or plain text as your message content — always use the tools.`;
+    : `Decide whether to reach out using the available tools. If you decide to reach out, use the "speak" tool for your message + action text. If you decide NOT to reach out, use the "skip_proactive" tool — exactly that literal name, never abbreviated to "skip" or anything else. Do NOT output JSON or plain text as your message content — always use the tools.`;
 
   return `${baseContext}
 

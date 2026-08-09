@@ -149,6 +149,71 @@ function runTests() {
       },
     },
     {
+      name: "pure bare \"skip\" alias (no skip_turn) is recovered as a generic skip — the reported leak",
+      run: () => {
+        // The exact user-reported shape (2026-08-09): the model abbreviated
+        // skip_turn to the bare key "skip". Previously this leaked because
+        // "skip" is not in NESTED_TOOL_KEYS — recovery returned null and the
+        // raw JSON string became the chat reply.
+        const leak = `{"skip": {"reason": "\u55ef\u55ef\u662f\u53e5\u6536\u5c3e\u7684\u5e94\u7b54\uff0c\u4ea4\u6613\u5df2\u8c08\u59a5\uff0c\u6ca1\u6709\u9700\u8981\u63a5\u7684\u8bdd\u3002"}}`;
+        const intent = extractIntentFromRawText(leak);
+        assert.ok(intent, "expected bare skip alias to be recovered");
+        assert.equal(intent!.shouldSkipInteract, true, "skip alias must map to shouldSkipInteract");
+        assert.equal(intent!.shouldSkipProactive, true, "skip alias must map to shouldSkipProactive");
+        assert.ok(
+          intent!.skipReason && intent!.skipReason.length > 0,
+          "skipReason must carry the reason text",
+        );
+        assert.ok(
+          !intent!.textResponse || intent!.textResponse.trim().length === 0,
+          "skip alias must not populate textResponse (would leak)",
+        );
+      },
+    },
+    {
+      name: "tool-name abbreviations resolve to canonical tools (like → like_picture)",
+      run: () => {
+        // Without alias resolution, a bare {"like":{}} would leak as raw
+        // JSON — same class of bug as the "skip" leak, different tool.
+        const intent = extractIntentFromRawText(`{"like": {}}`);
+        assert.ok(intent, "expected bare 'like' alias to be recovered");
+        assert.equal(intent!.likePreviousPicture, true, "'like' must map to likePreviousPicture");
+        assert.ok(
+          !intent!.textResponse || intent!.textResponse.trim().length === 0,
+          "like alias must not populate textResponse (would leak)",
+        );
+      },
+    },
+    {
+      name: "tool-name abbreviations resolve (end → end_turn, image → generate_image)",
+      run: () => {
+        const intent = extractIntentFromRawText(`{"end": {}, "image": {"prompt": "a sunset"}}`);
+        assert.ok(intent);
+        assert.equal(intent!.isEndTurn, true, "'end' must map to end_turn");
+        assert.ok(intent!.imageParams, "'image' must map to generate_image (imageParams set)");
+      },
+    },
+    {
+      name: "formatting variants normalize — camelCase / casing / separators match canonical",
+      run: () => {
+        // normalizeToolKey collapses these to "skipturn" == canonical skip_turn,
+        // so no per-variant alias entry is needed.
+        for (const variant of [
+          `{"skipTurn":{"reason":"r"}}`,
+          `{"Skip_Turn":{"reason":"r"}}`,
+          `{"SKIP-TURN":{"reason":"r"}}`,
+        ]) {
+          const intent = extractIntentFromRawText(variant);
+          assert.ok(intent, `expected variant to resolve: ${variant}`);
+          assert.equal(
+            intent!.shouldSkipInteract,
+            true,
+            `variant must resolve to skip_turn: ${variant}`,
+          );
+        }
+      },
+    },
+    {
       name: "recovery is authoritative — callers must not fall back to raw JSON for empty textResponse",
       run: () => {
         // Contract guard: when recovery succeeds, the returned intent is

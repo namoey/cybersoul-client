@@ -29,11 +29,13 @@
  *    — ordinary prose reasoning/preamble — free of JSON.parse cost.
  * 2. `robustJsonParse` (tolerates smart quotes, code fences, trailing
  *    garbage — the same parser the classic JSON-dispatcher uses).
- * 3. If the parsed object has a `speak` field (the nested tool-calling
- *    shape), synthesize `LLMToolCall[]` — one per non-null top-level
- *    tool name — and run them through `toolCallsToIntent`. This means
- *    the field mapping (speak.text → textResponse, update_state →
- *    stateUpdate, etc.) has exactly ONE implementation.
+ * 3. If any top-level key RESOLVES to a canonical tool name (via
+ *    `resolveToolKey` — exact match after normalization, or a declared
+ *    abbreviation alias like "skip" → skip_turn + skip_proactive),
+ *    synthesize `LLMToolCall[]` and run them through `toolCallsToIntent`.
+ *    This means the field mapping (speak.text → textResponse, update_state
+ *    → stateUpdate, etc.) has exactly ONE implementation, and the model's
+ *    abbreviated / mistyped tool names don't leak as raw JSON.
  * 4. Otherwise, if the parsed object looks like the FLAT classic
  *    schema (has `textResponse` or `actionText` at top level), return
  *    it as a partial intent directly.
@@ -49,12 +51,13 @@ import { robustJsonParse } from "../utils/json.utils.js";
 import { toolCallsToIntent } from "./toolCallsToIntent.js";
 
 /**
- * The tool names the nested schema uses as top-level keys. Must stay in
- * sync with the tools registered in `toolRegistry.ts` / the mapping in
- * `toolCallsToIntent.ts`. Used to decide which top-level keys to fold
- * into synthesized tool calls.
+ * Canonical nested-schema tool names — the keys the model is SUPPOSED to
+ * emit at the top level. Must stay in sync with the `switch` in
+ * `toolCallsToIntent.ts`. This is the single source of truth for what a
+ * "real" tool key looks like; the resolver below maps everything else to
+ * one of these.
  */
-const NESTED_TOOL_KEYS = [
+const CANONICAL_TOOL_NAMES = [
   "speak",
   "update_state",
   "generate_image",
@@ -66,6 +69,61 @@ const NESTED_TOOL_KEYS = [
   "skip_turn",
   "skip_proactive",
 ] as const;
+
+/**
+ * Normalize a tool key for matching: lowercase + drop non-alphanumerics.
+ * Collapses formatting variants so they need no explicit alias entry:
+ *   "skip_turn" | "skipTurn" | "SKIP-TURN" | "skip turn" → "skipturn"
+ */
+function normalizeToolKey(key: string): string {
+  return key.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+/** Normalized canonical names for exact-match lookup. */
+const CANONICAL_NORMALIZED = new Set(CANONICAL_TOOL_NAMES.map(normalizeToolKey));
+
+/**
+ * Explicit abbreviations the model emits that do NOT normalize to a
+ * canonical name. Maps normalized alias → canonical tool name(s) to fold
+ * into. Most map to one target; "skip" expands to BOTH skip intents
+ * because the abbreviation is ambiguous between reactive and proactive
+ * (each dispatch path consults only its own flag, so both is safe).
+ *
+ * Why an explicit map (not fuzzy prefix/substring matching): the leak
+ * class is "model shortens a tool name" (skip_turn→skip, like_picture→
+ * like, generate_image→image…). `normalizeToolKey` already absorbs
+ * formatting noise; this map covers the remaining stem abbreviations
+ * deterministically, with no false-positive risk on unrelated JSON.
+ */
+const TOOL_KEY_ALIASES: Record<string, readonly string[]> = {
+  skip: ["skip_turn", "skip_proactive"], // ambiguous → both flags
+  like: ["like_picture"],
+  image: ["generate_image"],
+  voice: ["generate_voice"],
+  event: ["trigger_event"],
+  gift: ["gift_outfit"],
+  state: ["update_state"],
+  end: ["end_turn"],
+};
+
+/**
+ * Resolve a top-level key the model emitted to the canonical tool
+ * name(s) it should fold into. Returns [] when unrecognized.
+ *
+ * Order: (1) exact normalized match, (2) explicit alias map.
+ */
+function resolveToolKey(key: string): string[] {
+  const normalized = normalizeToolKey(key);
+  if (!normalized) return [];
+  if (CANONICAL_NORMALIZED.has(normalized)) {
+    // Return the canonical casing, not the model's variant.
+    for (const canonical of CANONICAL_TOOL_NAMES) {
+      if (normalizeToolKey(canonical) === normalized) return [canonical];
+    }
+  }
+  const alias = TOOL_KEY_ALIASES[normalized];
+  return alias ? [...alias] : [];
+}
 
 /**
  * Attempt to recover a `DispatcherIntent` from raw LLM text content.
@@ -111,33 +169,32 @@ export function extractIntentFromRawText(
   // object keyed by tool name, e.g.
   //   {"speak":{"text":...},"update_state":{"stateUpdate":{...}}, ...}
   //   {"skip_turn":{"reason":"..."}}           ← pure-signal, no speak
-  // Detect this when ANY known tool key holds a non-null value (not just
-  // `speak` — a pure skip_turn/end_turn/like_picture turn has no speak).
-  // Synthesize tool calls and reuse the canonical bridge so the field
-  // mapping has one implementation.
-  const nestedKeys = NESTED_TOOL_KEYS.filter((key) => {
-    const value = (parsed as Record<string, unknown>)[key];
-    return value != null;
-  });
-  if (nestedKeys.length > 0) {
-    const syntheticCalls: LLMToolCall[] = [];
-    for (const key of nestedKeys) {
-      const value = (parsed as Record<string, unknown>)[key];
-      // Synthesize a tool call with the value as its arguments object.
-      // For object-valued tools (speak, update_state, ...) the value IS
-      // the args object; bare-value signal tools (end_turn historically {})
-      // get wrapped so JSON.stringify produces a valid args object.
-      syntheticCalls.push({
-        id: `raw-${key}`,
-        name: key,
+  //   {"skip":{"reason":"..."}}                ← abbreviated alias
+  // Detect this when ANY top-level key RESOLVES (via resolveToolKey) to a
+  // canonical tool name. Keys are resolved, not matched verbatim, so the
+  // model's abbreviations / casing variants don't cause a raw-JSON leak.
+  // One alias may expand to several canonical names (e.g. "skip" →
+  // skip_turn + skip_proactive); each becomes its own synthetic call.
+  const resolvedCalls: Array<{ name: string; value: unknown }> = [];
+  for (const [rawKey, value] of Object.entries(parsed)) {
+    if (value == null) continue;
+    for (const name of resolveToolKey(rawKey)) {
+      resolvedCalls.push({ name, value });
+    }
+  }
+  if (resolvedCalls.length > 0) {
+    const syntheticCalls: LLMToolCall[] = resolvedCalls.map(
+      ({ name, value }, i) => ({
+        id: `raw-${name}-${i}`,
+        name,
         // toolCallsToIntent expects a JSON string; the value may itself be
         // an object (speak) or a bare value (end_turn historically was {}).
         arguments:
           typeof value === "object" && !Array.isArray(value)
             ? JSON.stringify(value)
             : JSON.stringify({ __value: value }),
-      });
-    }
+      }),
+    );
     return toolCallsToIntent(syntheticCalls);
   }
 

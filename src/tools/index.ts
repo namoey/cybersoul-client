@@ -46,4 +46,7 @@ export type {
 
 export { toolCallsToIntent } from "./toolCallsToIntent.js";
 
-export { extractIntentFromRawText } from "./extractIntentFromRawText.js";
+export {
+  extractIntentFromRawText,
+  mergeRawTextIntoIntent,
+} from "./extractIntentFromRawText.js";

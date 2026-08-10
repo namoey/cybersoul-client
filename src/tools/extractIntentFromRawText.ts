@@ -214,5 +214,101 @@ export function extractIntentFromRawText(
     return intent;
   }
 
-  return null;
+  // GENERIC no-output signal: a valid JSON object that contains NO
+  // dialogue (textResponse/actionText), NO media (imageParams/voiceArgs),
+  // NO recognized tool keys, and NO flat schema — i.e. the model emitted
+  // structured text that carries no reply. This covers every shape where
+  // the model "thought in JSON" instead of replying: bare skip-args
+  // ({"reason":"..."}), stray reasoning objects ({"thought":"..."}), or
+  // any future unrecognized schema. Interpretation is uniform: NOT a
+  // reply → the character goes quiet. Setting BOTH skip flags means
+  // whichever dispatch path is active (reactive reads shouldSkipInteract,
+  // proactive reads shouldSkipProactive) treats it as a clean no-op
+  // instead of throwing non-actionable. The raw JSON is stashed in
+  // skipReason for diagnostics — never rendered to the user.
+  //
+  // This is the systematic replacement for per-field special cases: we
+  // don't match field names, we match the ABSENCE of output content.
+  return {
+    textResponse: "",
+    shouldSkipInteract: true,
+    shouldSkipProactive: true,
+    skipReason: trimmed,
+  };
+}
+
+/**
+ * Classify raw LLM text content into one of three categories. This is
+ * the single source of truth used by both `extractIntentFromRawText`
+ * and `mergeRawTextIntoIntent` — they share ONE parse pass with ONE
+ * parser (`robustJsonParse`), so they never disagree on what counts
+ * as JSON (the bug that arose when `mergeRawTextIntoIntent` used a
+ * separate strict `JSON.parse` that failed on smart-quoted JSON that
+ * `extractIntentFromRawText` considered valid).
+ *
+ *   - `"intent"`  — parsed as JSON and mapped to a known/named shape
+ *                   (nested tool schema, flat classic schema, or the
+ *                   generic no-output signal). The intent is returned.
+ *   - `"json"`    — parsed as JSON but did not yield an intent object
+ *                   (e.g. a JSON array, or a non-object primitive).
+ *                   Caller must NOT use it as dialogue — it's raw JSON.
+ *                   Suppressed to prevent leaks.
+ *   - `"prose"`   — not parseable as JSON (ordinary text). Safe to use
+ *                   as dialogue (last-resort fallback).
+ */
+type RawTextClassification =
+  | { kind: "intent"; intent: DispatcherIntent }
+  | { kind: "json" }
+  | { kind: "prose" };
+
+function classifyRawText(rawText: string): RawTextClassification {
+  const intent = extractIntentFromRawText(rawText);
+  if (intent) return { kind: "intent", intent };
+  // extractIntentFromRawText returns null for two cases: not-JSON
+  // (prose) and JSON-that-isn't-an-object (array/primitive). We need
+  // to tell them apart so prose can be used as dialogue but raw JSON
+  // is suppressed. Use the SAME parser for consistency.
+  const trimmed = rawText.trim();
+  if (!trimmed.includes("{") && !trimmed.startsWith("[")) {
+    return { kind: "prose" };
+  }
+  try {
+    robustJsonParse(trimmed, "raw-text classification");
+    return { kind: "json" }; // parsed but yielded no intent
+  } catch {
+    return { kind: "prose" }; // not parseable → prose
+  }
+}
+
+/**
+ * Safely merge raw text content into a parsed intent. Used by ALL
+ * tool-calling / streaming dispatch paths when the model emitted text
+ * alongside or instead of tool calls.
+ *
+ *   - If the text classifies as a known/named intent (nested tool
+ *     schema, flat classic schema, or generic no-output signal), merge
+ *     it authoritatively. A pure-signal payload ({skip_turn:...},
+ *     {end_turn:{}}, {reason:"..."}) legitimately yields empty
+ *     textResponse — that IS the intent, not a reason to fall back.
+ *   - Else if the text is ordinary PROSE, use it as textResponse (last
+ *     resort — the model talked instead of using tools).
+ *   - Else (raw JSON that yielded no object — an array/primitive) leave
+ *     textResponse untouched. Valid JSON is never dialogue; assigning
+ *     it to textResponse would leak raw JSON into the chat bubble /
+ *     notification.
+ *
+ * The classification shares ONE parser with `extractIntentFromRawText`,
+ * so the two never disagree on smart-quoted / garbage-wrapped JSON.
+ */
+export function mergeRawTextIntoIntent(
+  intent: DispatcherIntent,
+  rawText: string,
+): void {
+  const c = classifyRawText(rawText);
+  if (c.kind === "intent") {
+    Object.assign(intent, c.intent);
+  } else if (c.kind === "prose") {
+    intent.textResponse = rawText;
+  }
+  // else: raw JSON (array/primitive) → leave textResponse as-is (empty).
 }

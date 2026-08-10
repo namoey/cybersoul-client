@@ -57,7 +57,7 @@ import {
   buildTriggerEventTool,
   buildUpdateStateTool,
   toolCallsToIntent,
-  extractIntentFromRawText,
+  mergeRawTextIntoIntent,
 } from "../tools/index.js";
 import type {
   GenerateImageResult,
@@ -328,42 +328,20 @@ export class AgentHarness {
     const parsedIntent = toolCallsToIntent(result.toolCalls);
 
     // The model may emit text alongside tool calls (or as a pure-text
-    // reply with no tool calls). Three cases to handle without leaking
-    // raw JSON or reasoning into the chat bubble / notification:
-    //
-    //   1. Model emitted proper tool calls with a `speak` → already
-    //      folded into parsedIntent.textResponse by toolCallsToIntent.
-    //      Do nothing — the raw `content` (which may be reasoning for
-    //      thinking-mode models like DeepSeek reasoner) must NOT
-    //      override it, or notifications show reasoning instead of the
-    //      real dialogue (cybersoul-chat bug 2026-07-31).
-    //   2. Model ignored the tool declarations and emitted the NESTED
-    //      tool-calling schema as plain text (e.g.
-    //      `{"speak":{"text":...},"update_state":{...}}`). Recover it
-    //      via extractIntentFromRawText so it doesn't leak as raw JSON.
-    //   3. Model emitted ordinary prose / reasoning with no speak text
-    //      → fall back to raw content as textResponse (last resort).
+    // reply with no tool calls). When toolCallsToIntent already folded
+    // a `speak` into parsedIntent.textResponse, do nothing — the raw
+    // `content` (reasoning for thinking-mode models) must NOT override
+    // it (cybersoul-chat bug 2026-07-31). Otherwise, safely merge the
+    // raw text: recover nested/flat/skip-signal shapes, fall back to
+    // prose as dialogue, but NEVER leak unrecognized JSON. See
+    // mergeRawTextIntoIntent for the full case analysis.
     const speakText = parsedIntent.textResponse?.trim() ?? "";
     if (
       typeof result.textResponse === "string" &&
       result.textResponse.trim().length > 0 &&
       speakText.length === 0
     ) {
-      const recovered = extractIntentFromRawText(result.textResponse);
-      if (recovered) {
-        // Recovery is AUTHORITATIVE: merge its fields (textResponse,
-        // actionText, stateUpdate, shouldSkipInteract, isEndTurn, ...)
-        // and trust the result. A pure-signal payload like
-        // {"skip_turn":{"reason":...}} legitimately yields empty
-        // textResponse — that is NOT a reason to fall back to the raw
-        // JSON (which would leak it into the chat bubble / notification).
-        // Only fall back to raw content when recovery returns null
-        // (prose / malformed JSON) below.
-        Object.assign(parsedIntent, recovered);
-      } else {
-        // Ordinary prose / reasoning — use as-is (last resort).
-        parsedIntent.textResponse = result.textResponse;
-      }
+      mergeRawTextIntoIntent(parsedIntent, result.textResponse);
     }
 
     return { parsedIntent };
@@ -396,33 +374,16 @@ export class AgentHarness {
     let parsedIntent = toolCallsToIntent(result.toolCalls);
 
     // Defensive fallback: if the LLM returned NO tool calls but DID
-    // return text content, try to recover an intent from it. Two sub-
-    // cases (both handled by extractIntentFromRawText):
-    //   - NESTED tool-calling schema emitted inline, e.g.
-    //     `{"speak":{"text":...},"update_state":{...}}` — the helper
-    //     synthesizes tool calls and reads `speak.text` (the OLD code
-    //     here only read flat `jsonIntent.textResponse`, which doesn't
-    //     exist on the nested shape → raw JSON leaked into the proactive
-    //     message).
-    //   - FLAT classic schema (`{"textResponse":...}`).
-    // If recovery fails (ordinary prose / malformed), and there's no
-    // speak text from real tool calls, fall back to raw content as a
-    // last resort — then let the implicit-skip check below decide.
+    // return text content, safely merge it (recover nested/flat/skip-
+    // signal shapes; fall back to prose; never leak unrecognized JSON).
+    // See mergeRawTextIntoIntent for the full case analysis.
     const speakText = parsedIntent.textResponse?.trim() ?? "";
     if (
       typeof result.textResponse === "string" &&
       result.textResponse.trim().length > 0 &&
       speakText.length === 0
     ) {
-      const recovered = extractIntentFromRawText(result.textResponse);
-      if (recovered) {
-        // Recovery is AUTHORITATIVE — see runInteractDispatchWithTools.
-        // A pure-signal payload (skip_proactive/end_turn) legitimately
-        // has empty textResponse; don't clobber it with the raw JSON.
-        Object.assign(parsedIntent, recovered);
-      } else {
-        parsedIntent.textResponse = result.textResponse;
-      }
+      mergeRawTextIntoIntent(parsedIntent, result.textResponse);
     }
 
     if (parsedIntent.shouldSkipProactive) {
@@ -755,28 +716,12 @@ export class AgentHarness {
 
     // Fold all accumulated tool calls into the final intent.
     const parsedIntent = toolCallsToIntent(allToolCalls);
-    // Same three-case logic as runInteractDispatchWithTools /
-    // runInteractDispatchStream / runProactiveDispatchWithTools (see the
-    // long comment there). The loop path MUST recover raw nested-JSON
-    // content too — it's the path cybersoul-chat actually uses
-    // (agentLoop: {maxIterations:5}), and the model sometimes emits the
-    // tool schema as text instead of structured tool_calls (e.g.
-    // {"skip_turn":{"reason":"..."}} or {"speak":{"text":...}}).
-    // Without this recovery the raw JSON leaks into textResponse →
-    // chat bubble + notification body.
+    // Safely merge any final text the model emitted alongside its tool
+    // calls (recover nested/flat/skip-signal shapes; fall back to prose;
+    // never leak unrecognized JSON). See mergeRawTextIntoIntent.
     const speakText = parsedIntent.textResponse?.trim() ?? "";
     if (finalTextResponse && speakText.length === 0) {
-      const recovered = extractIntentFromRawText(finalTextResponse);
-      if (recovered) {
-        // Recovery is AUTHORITATIVE — see runInteractDispatchWithTools.
-        // A pure-signal payload (skip_turn/end_turn) legitimately has
-        // empty textResponse; don't clobber it with the raw JSON
-        // (which would leak it into the chat bubble / notification).
-        Object.assign(parsedIntent, recovered);
-      } else {
-        // Ordinary prose / reasoning — use as-is (last resort).
-        parsedIntent.textResponse = finalTextResponse;
-      }
+      mergeRawTextIntoIntent(parsedIntent, finalTextResponse);
     }
 
     // Surface cap-hit via the onError hook for telemetry. Non-fatal —
@@ -886,23 +831,14 @@ export class AgentHarness {
     // Fold accumulated tool calls into the intent.
     const parsedIntent = toolCallsToIntent(allToolCalls);
 
-    // Same three-case logic as runInteractDispatchWithTools (see the
-    // long comment there). The streaming path additionally MUST NOT
-    // unconditionally clobber a speak-populated textResponse with the
-    // streamed `fullText`, because for thinking-mode models that
-    // fullText is reasoning/preamble, not the real dialogue — which
-    // is exactly what leaked into notifications before this guard.
+    // Safely merge the streamed text (recover nested/flat/skip-signal
+    // shapes; fall back to prose; never leak unrecognized JSON). The
+    // streaming path additionally MUST NOT clobber a speak-populated
+    // textResponse — for thinking-mode models fullText is reasoning /
+    // preamble, not the real dialogue. See mergeRawTextIntoIntent.
     const speakText = parsedIntent.textResponse?.trim() ?? "";
     if (fullText && fullText.trim().length > 0 && speakText.length === 0) {
-      const recovered = extractIntentFromRawText(fullText);
-      if (recovered) {
-        // Recovery is AUTHORITATIVE — see runInteractDispatchWithTools.
-        // A pure-signal payload (skip_turn/end_turn) legitimately has
-        // empty textResponse; don't clobber it with the raw JSON.
-        Object.assign(parsedIntent, recovered);
-      } else {
-        parsedIntent.textResponse = fullText;
-      }
+      mergeRawTextIntoIntent(parsedIntent, fullText);
     }
 
     return { parsedIntent };

@@ -16,7 +16,11 @@
  *   - null-valued tool keys are skipped (model said "not this tool").
  */
 
-import { extractIntentFromRawText } from "./extractIntentFromRawText.js";
+import {
+  extractIntentFromRawText,
+  mergeRawTextIntoIntent,
+} from "./extractIntentFromRawText.js";
+import type { DispatcherIntent } from "../types.js";
 
 const assert = {
   equal: (a: any, b: any, msg?: string) => {
@@ -266,17 +270,131 @@ function runTests() {
       },
     },
     {
-      name: "object that is neither nested nor flat schema returns null",
+      name: "JSON object with no dialogue/media content is a generic no-output signal (skip)",
       run: () => {
-        // e.g. some unrelated JSON the model emitted — leave to caller.
-        assert.equal(extractIntentFromRawText(`{"foo":"bar"}`), null);
-        assert.equal(extractIntentFromRawText(`{"list":[1,2,3]}`), null);
+        // GENERIC rule: any valid JSON object the model emitted as text
+        // that contains NO reply content (no textResponse/actionText, no
+        // recognized tool keys, no flat schema) is interpreted as "the
+        // model chose not to reply". This is uniform — no field-name
+        // matching — so it covers bare skip-args ({reason:...}), stray
+        // reasoning objects ({thought:...}), and any future unrecognized
+        // schema. Without this, these shapes leak as raw JSON.
+        for (const leak of [
+          `{"foo":"bar"}`,            // truly unrelated JSON
+          `{"list":[1,2,3]}`,          // array-valued, no dialogue
+          `{"thought":"hmm, not sure"}`, // stray reasoning
+        ]) {
+          const intent = extractIntentFromRawText(leak);
+          assert.ok(intent, `expected generic no-output for: ${leak}`);
+          assert.equal(intent!.shouldSkipInteract, true, `reactive skip for: ${leak}`);
+          assert.equal(intent!.shouldSkipProactive, true, `proactive skip for: ${leak}`);
+          assert.ok(
+            !intent!.textResponse || intent!.textResponse.trim().length === 0,
+            `must not populate textResponse (would leak): ${leak}`,
+          );
+          assert.ok(
+            typeof intent!.skipReason === "string" && intent!.skipReason.length > 0,
+            `skipReason must stash raw JSON for diagnostics: ${leak}`,
+          );
+        }
       },
     },
     {
-      name: "JSON array (not object) returns null",
+      name: "JSON array (not object) returns null — arrays aren't intent objects",
       run: () => {
+        // Arrays aren't objects keyed by field → can't carry an intent.
+        // extractIntentFromRawText returns null; classifyRawText tags them
+        // as "json" so mergeRawTextIntoIntent suppresses them (no leak).
         assert.equal(extractIntentFromRawText(`[1,2,3]`), null);
+      },
+    },
+    {
+      name: "bare {\"reason\":\"...\"} (skip args without tool wrapper) is recovered as a skip — the reported leak",
+      run: () => {
+        // The exact user-reported shape (2026-08-10): the model emitted
+        // the skip_turn args object as text, WITHOUT the skip_turn wrapper.
+        // Previously leaked because recovery returned null and the harness
+        // fallback assigned the raw JSON to textResponse.
+        const leak = `{"reason":"对方只是简单应和收尾，对话已自然结束，无需再补一句。"}`;
+        const intent = extractIntentFromRawText(leak);
+        assert.ok(intent, "expected bare reason object to be recovered");
+        assert.equal(intent!.shouldSkipInteract, true, "bare reason must map to shouldSkipInteract");
+        assert.equal(intent!.shouldSkipProactive, true, "bare reason must map to shouldSkipProactive");
+        assert.ok(
+          intent!.skipReason && intent!.skipReason.length > 0,
+          "skipReason must carry the reason text",
+        );
+        assert.ok(
+          !intent!.textResponse || intent!.textResponse.trim().length === 0,
+          "bare reason must not populate textResponse (would leak)",
+        );
+      },
+    },
+    {
+      name: "reason alongside dialogue fields does NOT become a skip (avoids false positive)",
+      run: () => {
+        // A flat schema that happens to have a `reason` field must NOT
+        // be misread as a skip — textResponse presence wins.
+        const intent = extractIntentFromRawText(
+          `{"textResponse":"hello","reason":"just chatting"}`,
+        );
+        assert.ok(intent);
+        assert.equal(intent!.textResponse, "hello");
+        assert.ok(
+          !intent!.shouldSkipInteract,
+          "must not skip when textResponse is present",
+        );
+      },
+    },
+    {
+      name: "mergeRawTextIntoIntent — unrecognized JSON object becomes a clean skip (no leak)",
+      run: () => {
+        // GENERIC guard: any JSON object recovery can't map to dialogue
+        // becomes a no-output skip — never leaks into textResponse.
+        const intent: DispatcherIntent = { textResponse: "" };
+        mergeRawTextIntoIntent(intent, `{"unknown_future_field":"x"}`);
+        assert.equal(
+          intent.textResponse,
+          "",
+          "unrecognized JSON must not leak as textResponse",
+        );
+        assert.equal(
+          intent.shouldSkipInteract,
+          true,
+          "unrecognized JSON object should become a clean skip",
+        );
+      },
+    },
+    {
+      name: "mergeRawTextIntoIntent — ordinary prose is used as dialogue",
+      run: () => {
+        const intent: DispatcherIntent = { textResponse: "" };
+        mergeRawTextIntoIntent(intent, "你好呀，今天天气真不错～");
+        assert.equal(intent.textResponse, "你好呀，今天天气真不错～");
+      },
+    },
+    {
+      name: "mergeRawTextIntoIntent — recovered no-output intent is merged authoritatively",
+      run: () => {
+        // {"reason":"going quiet"} has no dialogue fields → generic
+        // no-output → skip. skipReason stashes the raw JSON for diagnostics.
+        const intent: DispatcherIntent = { textResponse: "" };
+        mergeRawTextIntoIntent(intent, `{"reason":"going quiet"}`);
+        assert.equal(intent.shouldSkipInteract, true);
+        assert.equal(intent.textResponse, "", "empty textResponse is intentional");
+        assert.ok(
+          typeof intent.skipReason === "string" && intent.skipReason.includes("going quiet"),
+          "skipReason must carry the raw JSON for diagnostics",
+        );
+      },
+    },
+    {
+      name: "mergeRawTextIntoIntent — prose starting with a brace (e.g. action text) is NOT suppressed",
+      run: () => {
+        // {smiles} hi is NOT valid JSON → treated as prose → used as dialogue.
+        const intent: DispatcherIntent = { textResponse: "" };
+        mergeRawTextIntoIntent(intent, "{微笑} 你好呀");
+        assert.equal(intent.textResponse, "{微笑} 你好呀");
       },
     },
   ];

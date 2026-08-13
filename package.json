@@ -1,6 +1,6 @@
 {
   "name": "@space3-npm/cybersoul-client",
-  "version": "1.7.10",
+  "version": "1.8.0",
   "type": "module",
   "main": "dist/index.js",
   "module": "dist/index.js",
@@ -18,7 +18,7 @@
     "build": "node scripts/generate-version.mjs && tsc",
     "prepare": "npm run build",
     "version": "node scripts/generate-version.mjs && git add src/version.ts",
-    "test": "npm run build && node dist/utils/json.utils.test.js && node dist/agent/contextManager.test.js && node dist/agent/eventStream.test.js && node dist/tools/stateTools.test.js && node dist/tools/toolCallsToIntent.test.js && node dist/tools/extractIntentFromRawText.test.js && node dist/agent/capabilityErrors.test.js && node dist/agent/asyncEventQueue.test.js && node dist/agent/cyberSoulAgent.test.js && node dist/agent/historyCompactor.test.js && node dist/agent/personaAndTools.test.js && node dist/agent/historyCompaction.wiring.test.js && node dist/agent/agentLoop.test.js && node dist/agent/streaming.test.js"
+    "test": "npm run build && node dist/utils/json.utils.test.js && node dist/agent/contextManager.test.js && node dist/agent/eventStream.test.js && node dist/tools/stateTools.test.js && node dist/tools/toolCallsToIntent.test.js && node dist/tools/extractIntentFromRawText.test.js && node dist/tools/recallChatHistoryTool.test.js && node dist/agent/capabilityErrors.test.js && node dist/agent/asyncEventQueue.test.js && node dist/agent/cyberSoulAgent.test.js && node dist/agent/historyCompactor.test.js && node dist/agent/personaAndTools.test.js && node dist/agent/historyCompaction.wiring.test.js && node dist/agent/agentLoop.test.js && node dist/agent/streaming.test.js && node dist/agent/streamingReasoning.test.js && node dist/agent/normalizeMessages.test.js"
   },
   "keywords": [
     "cybersoul",

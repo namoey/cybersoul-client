@@ -30,6 +30,21 @@ export { buildTriggerEventTool } from "./eventTools.js";
 export type { TriggerEventResult } from "./eventTools.js";
 
 export {
+  buildRecallChatHistoryTool,
+  formatRecallTranscript,
+  buildRecallChatHistoryDescription,
+  RECALL_CHAT_HISTORY_DESCRIPTION_PREAMBLE,
+  DEFAULT_MAX_HITS,
+  DEFAULT_MAX_TRANSCRIPT_CHARS,
+} from "./recallChatHistoryTool.js";
+export type {
+  RecallChatHistoryArgs,
+  RecallChatHistoryHit,
+  RecallChatHistoryResult,
+  ChatHistorySearcher,
+} from "./recallChatHistoryTool.js";
+
+export {
   speakTool,
   likePictureTool,
   endTurnTool,

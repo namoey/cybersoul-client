@@ -40,11 +40,23 @@ export function normalizeMessagesForProvider(
     // tool_calls, reasoning_content) so the provider can correlate
     // tool results and continue thinking-mode reasoning.
     const out: Record<string, unknown> = { role: m.role, content: m.content };
-    if ((m as any).tool_calls) {
+    const hasToolCalls = !!((m as any).tool_calls);
+    if (hasToolCalls) {
       out.tool_calls = (m as any).tool_calls;
     }
-    if ((m as any).reasoning_content) {
-      out.reasoning_content = (m as any).reasoning_content;
+    const reasoning = (m as any).reasoning_content;
+    // DeepSeek thinking mode requires `reasoning_content` to be PRESENT
+    // on assistant messages that carry tool_calls — even when the value
+    // is an empty string. The previous `if (reasoning)` truthiness
+    // check stripped empty strings, which caused HTTP 400
+    // "The reasoning_content in the thinking mode must be passed back
+    // to the API." So: pass it through whenever it's a string. For
+    // non-tool-call messages we keep the truthiness gate so unrelated
+    // turns don't sprout empty reasoning fields.
+    if (typeof reasoning === "string") {
+      if (reasoning.length > 0 || hasToolCalls) {
+        out.reasoning_content = reasoning;
+      }
     }
     return out;
   });
@@ -842,6 +854,14 @@ export class GenericLLMProvider implements BaseLLMProvider {
     const decoder = new TextDecoder();
     let buffer = '';
     let fullText = '';
+    // Accumulate reasoning_content from thinking-mode models
+    // (DeepSeek-V4). Streamed as `delta.reasoning_content` chunks
+    // alongside `delta.content`. Captured here so a streaming-capable
+    // agent loop can echo it back on the assistant message (DeepSeek
+    // returns 400 "The reasoning_content in the thinking mode must be
+    // passed back to the API" if a prior thinking turn's reasoning is
+    // dropped). Mirrors the non-streaming `chat()` extraction.
+    let reasoningText = '';
     const toolCallBuffers = new Map<number, { id?: string; name?: string; arguments: string }>();
     const deltaPath = template.streamDeltaPath || 'choices.0.delta.content';
     const deltaPathParts = deltaPath.split('.');
@@ -887,6 +907,7 @@ export class GenericLLMProvider implements BaseLLMProvider {
                 name: buf.name ?? '',
                 arguments: buf.arguments || '{}',
               })),
+              reasoningContent: reasoningText || undefined,
             };
             return;
           }
@@ -906,6 +927,15 @@ export class GenericLLMProvider implements BaseLLMProvider {
           if (typeof delta === 'string' && delta.length > 0) {
             fullText += delta;
             yield { type: 'text-delta', delta };
+          }
+
+          // Accumulate reasoning_content delta from thinking-mode
+          // models (DeepSeek-V4). NOT emitted as its own event — we
+          // only need it on the final message-complete so a loop can
+          // echo it back. See `reasoningText` declaration above.
+          const reasoningDelta = this.resolvePath(chunk, 'choices.0.delta.reasoning_content');
+          if (typeof reasoningDelta === 'string' && reasoningDelta.length > 0) {
+            reasoningText += reasoningDelta;
           }
 
           // Accumulate tool-call fragments (OpenAI streaming format:
@@ -948,6 +978,7 @@ export class GenericLLMProvider implements BaseLLMProvider {
         name: buf.name ?? '',
         arguments: buf.arguments || '{}',
       })),
+      reasoningContent: reasoningText || undefined,
     };
   }
 

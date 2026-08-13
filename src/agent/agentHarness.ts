@@ -474,6 +474,13 @@ export class AgentHarness {
     // get_state, iteration 2 calls generate_image based on the state).
     const allToolCalls: import("../types.js").LLMToolCall[] = [];
     let finalTextResponse = "";
+    // DeepSeek thinking mode: the most recent non-empty reasoning_content
+    // seen from the model across iterations. Carried forward onto
+    // assistant tool-call echoes when the current turn produced no
+    // reasoning (the model doesn't always think before a tool call).
+    // See the assistant-echo comment below for why the field must be
+    // present on every tool_call-bearing assistant message.
+    let lastReasoningContent = "";
     // Track which side-effect tools the loop already executed so the
     // client can skip re-running them.
     const loopDispatchedTools = new Set<string>();
@@ -551,14 +558,32 @@ export class AgentHarness {
       // can correlate each subsequent tool-result message to its
       // originating call via tool_call_id.
       //
-      // CRITICAL for DeepSeek thinking mode: reasoning_content MUST be
-      // passed back on the assistant message when tool_calls are
-      // present. Without it, DeepSeek returns 400 "The reasoning_content
-      // in the thinking mode must be passed back to the API."
+      // CRITICAL for DeepSeek thinking mode: the `reasoning_content`
+      // field MUST be present on EVERY assistant message that carries
+      // tool_calls. DeepSeek returns 400 "The reasoning_content in the
+      // thinking mode must be passed back to the API" otherwise. The
+      // model sometimes legitimately omits reasoning on a tool-call
+      // turn (it's not required to think before every tool call), so
+      // we CANNOT rely on `result.reasoningContent` being populated.
+      // When it's empty, carry forward the most recent non-empty
+      // reasoning seen earlier in the loop — DeepSeek wants the
+      // reasoning thread preserved across the tool-call sequence, and
+      // the last thinking turn is the best available approximation.
+      // If no reasoning has been seen at all yet (first turn, no
+      // thinking), fall back to an empty string so the FIELD is
+      // present even if the VALUE is empty (satisfies the "must be
+      // passed back" contract).
+      const currentReasoning = result.reasoningContent?.trim() || "";
+      if (currentReasoning) {
+        lastReasoningContent = currentReasoning;
+      }
+      const echoReasoning = currentReasoning || lastReasoningContent;
       conversation.push({
         role: "assistant",
         content: finalTextResponse || "",
-        reasoning_content: result.reasoningContent || undefined,
+        // Always present when tool_calls are present (see comment above).
+        // Empty string when neither current nor prior reasoning exists.
+        reasoning_content: echoReasoning,
         // Attach the raw tool_calls in OpenAI format so the provider
         // can match them with the tool-result messages below.
         tool_calls: result.toolCalls.map((c, idx) => ({

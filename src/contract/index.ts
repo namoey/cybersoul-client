@@ -153,3 +153,24 @@ export type {
   CompactedHistory,
   CompactionStrategy,
 } from "../agent/historyCompactor.js";
+
+// Recall chat-history tool — host-facing primitive. The SDK owns the
+// tool contract (name, schema, description, result formatting); the
+// host supplies a `ChatHistorySearcher` closure that reads its local
+// history store (MMKV, SQLite, …). See
+// `cybersoul-chat/docs/recall-chat-history-tool.md`. Promoted to the
+// public contract so any host can register the capability via
+// `extraTools`.
+export {
+  buildRecallChatHistoryTool,
+  formatRecallTranscript,
+  buildRecallChatHistoryDescription,
+  DEFAULT_MAX_HITS,
+  DEFAULT_MAX_TRANSCRIPT_CHARS,
+} from "../tools/recallChatHistoryTool.js";
+export type {
+  RecallChatHistoryArgs,
+  RecallChatHistoryHit,
+  RecallChatHistoryResult,
+  ChatHistorySearcher,
+} from "../tools/recallChatHistoryTool.js";

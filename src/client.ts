@@ -738,7 +738,41 @@ export class CyberSoulClient {
       let parsedIntent: DispatcherIntent;
       let loopDispatchedTools: Set<string> | undefined;
       let loopMedia: DispatchResult["loopMedia"];
-      if (useStreaming) {
+      // Dispatch priority (changed 2026-08-14):
+      //   1. Agent loop + tool-calling  → runInteractDispatchLoop
+      //   2. Streaming + tool-calling    → runInteractDispatchStream
+      //   3. Tool-calling (single-shot)  → runInteractDispatchWithTools
+      //   4. JSON-dispatcher (default)   → runInteractDispatch
+      //
+      // The LOOP now wins over streaming. Why: streaming is single-pass
+      // (it consumes one stream and folds tool calls, but cannot execute
+      // a tool and feed its result back to the model). Any `extraTools`
+      // the host registered that the model is expected to call and then
+      // react to — notably `recall_chat_history` — would be declared
+      // but never actually fire on the streaming path. The loop is the
+      // only dispatch that honors multi-step tool use, so when the
+      // caller has opted into it (`agentLoop` set) AND tool-calling is
+      // active, the loop takes priority. The trade-off is that loop
+      // turns do NOT stream text deltas to the UI (the loop uses
+      // non-streaming `chat()` per iteration). Callers who want
+      // streaming more than multi-step tools should leave `agentLoop`
+      // unset.
+      if (useToolCalling && loopConfig) {
+        const registry = this.buildTurnToolRegistry(sink, params.extraTools, ctx.state);
+        const declarations = registry.buildToolDeclarations();
+        const toolCtx = this.buildToolContext(ctx.state, params);
+        // Phase 3.3 — multi-step agent loop. The loop dispatches
+        // side-effect tools inline (image, voice, etc.) and tracks
+        // which ones ran so the side-effect layer skips them.
+        ({ parsedIntent, loopDispatchedTools, loopMedia } =
+          await harness.runInteractDispatchLoop(
+            promptMessages,
+            declarations,
+            registry,
+            toolCtx,
+            loopConfig,
+          ));
+      } else if (useStreaming) {
         const registry = this.buildTurnToolRegistry(sink, params.extraTools, ctx.state);
         const declarations = registry.buildToolDeclarations();
         ({ parsedIntent } = await harness.runInteractDispatchStream(
@@ -748,25 +782,10 @@ export class CyberSoulClient {
       } else if (useToolCalling) {
         const registry = this.buildTurnToolRegistry(sink, params.extraTools, ctx.state);
         const declarations = registry.buildToolDeclarations();
-        const toolCtx = this.buildToolContext(ctx.state, params);
-        if (loopConfig) {
-          // Phase 3.3 — multi-step agent loop. The loop dispatches
-          // side-effect tools inline (image, voice, etc.) and tracks
-          // which ones ran so the side-effect layer skips them.
-          ({ parsedIntent, loopDispatchedTools, loopMedia } =
-            await harness.runInteractDispatchLoop(
-              promptMessages,
-              declarations,
-              registry,
-              toolCtx,
-              loopConfig,
-            ));
-        } else {
-          ({ parsedIntent } = await harness.runInteractDispatchWithTools(
-            promptMessages,
-            declarations,
-          ));
-        }
+        ({ parsedIntent } = await harness.runInteractDispatchWithTools(
+          promptMessages,
+          declarations,
+        ));
       } else {
         ({ parsedIntent } = await harness.runInteractDispatch(
           promptMessages,

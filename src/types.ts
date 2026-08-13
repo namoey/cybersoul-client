@@ -790,6 +790,15 @@ export type LLMStreamEvent =
       type: "message-complete";
       textResponse: string;
       toolCalls: LLMToolCall[];
+      /**
+       * Optional reasoning content from thinking-mode models
+       * (e.g. DeepSeek-V4). Accumulated from `delta.reasoning_content`
+       * across the stream. When present, a streaming-capable agent
+       * loop MUST pass it back on the assistant message — DeepSeek
+       * returns 400 if it's missing. Mirrors the non-streaming
+       * `LLMChatResult.reasoningContent` contract.
+       */
+      reasoningContent?: string;
       usage?: { inputTokens?: number; outputTokens?: number };
       stopReason?: string;
     }

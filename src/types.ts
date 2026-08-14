@@ -1,3 +1,13 @@
+/**
+ * The storefront market a client runs in. Derived on iOS from the
+ * StoreKit storefront (CHN → CN, anything else → GLOBAL) and on
+ * Android from the build config. Passed to the backend when fetching
+ * LLM templates so market-restricted providers (App Store Guideline 5,
+ * e.g. OpenAI in mainland China) are never served. Omit → no
+ * filtering (legacy behavior for web / old backends).
+ */
+export type LlmMarket = "CN" | "GLOBAL";
+
 export interface GenericLLMConfig {
   provider: string;
   apiKey: string;
@@ -24,6 +34,13 @@ export interface CyberSoulClientConfig {
   characterKey: string;
   backendUrl: string;
   llmConfig: GenericLLMConfig;
+  /**
+   * Storefront market this client runs in (see LlmMarket). Forwarded
+   * to the backend on template fetches so market-restricted models
+   * return 404 instead of serving a restricted template. Optional —
+   * omitting keeps legacy unfiltered behavior.
+   */
+  market?: LlmMarket;
   requestTimeoutMs?: number;
   maxRetries?: number;
   /**

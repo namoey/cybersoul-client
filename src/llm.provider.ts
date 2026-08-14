@@ -1,4 +1,4 @@
-import { BaseLLMProvider, GenericLLMConfig, LLMToolCall, LLMChatResult, LLMToolDeclaration, LLMConversationMessage, LLMPlainMessage, LLMStreamEvent } from './types.js';
+import { BaseLLMProvider, GenericLLMConfig, LLMToolCall, LLMChatResult, LLMToolDeclaration, LLMConversationMessage, LLMPlainMessage, LLMStreamEvent, LlmMarket } from './types.js';
 import {
   CyberSoulLlmApiError,
   CyberSoulLlmAuthError,
@@ -178,7 +178,8 @@ export class GenericLLMProvider implements BaseLLMProvider {
     private config: GenericLLMConfig,
     private backendApiUrl: string,
     private backendAuthToken?: string,
-    private fetchImpl?: typeof fetch
+    private fetchImpl?: typeof fetch,
+    private market?: LlmMarket
   ) {}
 
   private get fetchFn(): typeof fetch {
@@ -189,7 +190,13 @@ export class GenericLLMProvider implements BaseLLMProvider {
   }
 
   private async fetchTemplate() {
-    const cacheKey = `${this.config.provider}:${this.config.model}`;
+    // The cache key MUST include the market: the cache is static and
+    // shared across ALL provider instances in this process. Without
+    // the market dimension, a template fetched unfiltered (or for a
+    // different market) would poison lookups for every other market —
+    // and a market-restricted template could leak into a restricted
+    // client's cache, defeating the backend gate.
+    const cacheKey = `${this.config.provider}:${this.config.model}:${this.market ?? "any"}`;
     if (GenericLLMProvider.templateCache.has(cacheKey)) {
       return GenericLLMProvider.templateCache.get(cacheKey);
     }
@@ -205,6 +212,9 @@ export class GenericLLMProvider implements BaseLLMProvider {
       provider: this.config.provider,
       model: this.config.model
     });
+    if (this.market) {
+      qs.set('market', this.market);
+    }
 
     const templateUrl = `${this.backendApiUrl}/api/v1/cyber-soul/llm-models/template?${qs.toString()}`;
     let resp: Response;

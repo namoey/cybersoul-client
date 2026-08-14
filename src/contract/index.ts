@@ -62,6 +62,7 @@ export type {
   IModelCustomConfigField,
   IVoiceModel,
   SupportedLLMModel,
+  LlmMarket,
   ICharacterProfile,
   LikedPicture,
   MomentSummary,

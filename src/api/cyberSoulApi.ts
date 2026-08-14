@@ -7,6 +7,7 @@ import {
   LikedPicture,
   CoreMemory,
   UserCodex,
+  LlmMarket,
   MomentSummary,
 } from "../types.js";
 import {
@@ -581,10 +582,14 @@ export class CyberSoulApi {
   /**
    * GET /api/v1/cyber-soul/llm-models. Lists the public LLM models the
    * backend currently supports, including each model's
-   * `customConfigDefinition` schema for `customSettings`.
+   * `customConfigDefinition` schema for `customSettings`. Pass `market`
+   * to filter by storefront availability (App Store Guideline 5).
    */
-  async listLLMModels(): Promise<SupportedLLMModel[]> {
-    const res = await this.apiFetch("/api/v1/cyber-soul/llm-models");
+  async listLLMModels(market?: LlmMarket): Promise<SupportedLLMModel[]> {
+    const path = market
+      ? `/api/v1/cyber-soul/llm-models?market=${encodeURIComponent(market)}`
+      : "/api/v1/cyber-soul/llm-models";
+    const res = await this.apiFetch(path);
     if (!res.ok) {
       throw new Error(`Failed to list supported LLMs: ${res.status}`);
     }

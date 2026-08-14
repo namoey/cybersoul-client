@@ -1,4 +1,4 @@
 // AUTO-GENERATED from package.json by scripts/generate-version.mjs — DO NOT EDIT.
 // To bump the version, run `npm version <patch|minor|major>` or edit package.json
 // and run `npm run build`.
-export const VERSION = "1.8.0";
+export const VERSION = "1.9.0";

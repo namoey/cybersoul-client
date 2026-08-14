@@ -11,6 +11,7 @@ import {
   InteractResponse,
   BaseLLMProvider,
   CharacterState,
+  LlmMarket,
   CoreMemory,
   UserCodex,
   HistoryEntry,
@@ -150,6 +151,7 @@ export class CyberSoulClient {
       config.backendUrl,
       config.characterKey,
       config.fetchImpl,
+      config.market,
     );
 
     this.context = new ContextManager(this.api);
@@ -1204,10 +1206,12 @@ export class CyberSoulClient {
    * `customConfigDefinition` schema for each model's `customSettings`.
    *
    * Use this to discover valid `provider` / `model` strings and the keys
-   * each model accepts via `llmConfig.customSettings`.
+   * each model accepts via `llmConfig.customSettings`. Pass `market` (or
+   * set `market` on the client config) to filter by storefront
+   * availability — restricted providers are omitted for that market.
    */
-  public async listSupportedLLMs(): Promise<SupportedLLMModel[]> {
-    return this.api.listLLMModels();
+  public async listSupportedLLMs(market?: LlmMarket): Promise<SupportedLLMModel[]> {
+    return this.api.listLLMModels(market ?? this.config.market);
   }
 
   /**

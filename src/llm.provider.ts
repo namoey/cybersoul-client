@@ -133,11 +133,23 @@ function extractProviderError(body: unknown, status: number): string {
 }
 
 /**
+ * Transport-level failure signatures that can arrive as plain `Error`
+ * objects (NOT `TypeError`) — e.g. Android OkHttp surfaces
+ * `UnknownHostException` ("Unable to resolve host …") and
+ * `SocketException` ("Software caused connection abort") through body
+ * reads / streaming paths that don't go through the `fetch` wrapper.
+ * Keep in sync with the host-side defensive net (cybersoul-chat
+ * `classifySdkFailure`'s TRANSPORT_ERROR_RE).
+ */
+const TRANSPORT_ERROR_RE =
+  /unable to resolve host|no address associated with hostname|software caused connection abort|connection (reset|refused|aborted|closed|timed out)|econn(refused|reset|aborted|closed)|etimedout|timed? ?out|socket hang up|network (request failed|error)|failed to fetch|fetch failed|err_name_not_resolved|err_internet_disconnected|err_connection|host unreachable|net::/i;
+
+/**
  * Wrap a raw `fetch`-layer throw (TypeError "Network request failed" /
- * "Failed to fetch" / "fetch failed") as a typed [CyberSoulNetworkError]
- * that carries the LLM endpoint context. Non-TypeError throws are
- * returned untouched so genuine programming bugs aren't misclassified
- * as transport failures.
+ * "Failed to fetch" / "fetch failed", or an errno-style plain Error)
+ * as a typed [CyberSoulNetworkError] that carries the LLM endpoint
+ * context. Non-transport throws are returned untouched so genuine
+ * programming bugs aren't misclassified as transport failures.
  */
 function wrapLlmFetchError(
   err: unknown,
@@ -149,13 +161,17 @@ function wrapLlmFetchError(
   }
   // RN throws `TypeError: Network request failed`. Web throws
   // `TypeError: Failed to fetch`. Node undici throws `TypeError: fetch
-  // failed`. Treat any TypeError from `fetch` as a transport-layer
-  // failure — programming errors in the call path don't throw TypeErrors.
-  if (err instanceof TypeError) {
+  // failed`. Android body-read/streaming paths can also surface plain
+  // `Error` objects carrying errno/hostname text — match those by
+  // message so they classify as transport failures too.
+  if (
+    err instanceof TypeError ||
+    (err instanceof Error && TRANSPORT_ERROR_RE.test(err.message))
+  ) {
     return new CyberSoulNetworkError(
       endpoint,
       method,
-      err.message
+      err instanceof Error && err.message
         ? `LLM network request failed: ${method} ${endpoint}: ${err.message}`
         : `LLM network request failed: ${method} ${endpoint}`,
       { cause: err },

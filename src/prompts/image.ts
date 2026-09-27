@@ -11,7 +11,13 @@
 
 // ── Perspective guidance ──────────────────────────────────────────
 // Used in the tool description AND embedded in full_prompt's JSON hint.
-const IMAGE_PERSPECTIVE_GUIDANCE = `CRITICAL RULE FOR PERSPECTIVE: If you are physically separated from the user, simulate a selfie. However, absolutely DO NOT use the words 'selfie', 'phone', 'camera', 'lens', or 'holding' in full_prompt (unless taking a mirror selfie). NEVER try to use negative prompting like 'no phone visible', as simply writing the word 'phone' forces image models to mistakenly draw a phone or phone border! Instead, achieve the natural selfie look using pure composition descriptions (e.g., 'intimate portrait looking directly at the viewer', 'high-angle portrait leaning forward', or 'wide portrait with one arm reaching out of the frame'). Vary the framing distance and angle to match the mood. If you are physically together with the user, the image MUST be a strict first-person perspective exclusively from the USER's eyes (start full_prompt with 'POV: '). NEVER mix perspectives together. DO NOT describe the user (e.g., 'a man', 'the driver') as visible in the scene because the view IS the user. Describe ONLY the character looking back and their immediate surroundings. MUST align precisely with the character's current Wardrobe and exposure state. Explicitly describe the character's exact clothing (or specify naked/half-naked if applicable). Ensure basic appearance (makeup, body shape, hair, facial features, etc.) aligns exactly with the character's foundational appearance profile.`;
+const IMAGE_PERSPECTIVE_GUIDANCE = `CRITICAL RULE FOR PERSPECTIVE: If you are physically separated from the user, simulate a selfie.
+However, absolutely DO NOT use the words 'selfie', 'phone', 'camera', 'lens', or 'holding' in full_prompt (unless taking a mirror selfie). NEVER try to use negative prompting like 'no phone visible', as simply writing the word 'phone' forces image models to mistakenly draw a phone or phone border!
+Instead, achieve the natural selfie look using pure composition descriptions (e.g., 'warm portrait looking directly at the viewer', 'high-angle portrait leaning forward', or 'wide portrait with one arm reaching out of the frame'). Vary the framing distance and angle to match the mood.
+If you are physically together with the user, the image MUST be a strict first-person perspective exclusively from the USER's eyes (start full_prompt with 'POV: '). NEVER mix perspectives together.
+DO NOT describe the user (e.g., 'a man', 'the driver') as visible in the scene because the view IS the user. Describe ONLY the character looking back and their immediate surroundings.
+PRESENTATION: describe the character's overall look with concrete, natural, everyday wording — exactly how a real person would present themselves in this moment, consistent with their established style and the current scene. Keep every image tasteful; convey romance through framing, lighting, and expression alone.
+Ensure basic appearance (makeup, body shape, hair, facial features, etc.) aligns exactly with the character's foundational appearance profile.`;
 
 // ── Field definitions ─────────────────────────────────────────────
 
@@ -40,7 +46,7 @@ export const IMAGE_FIELDS: Record<string, ImageFieldDef> = {
   },
   expression: {
     type: "string",
-    enum: ["seductive", "cute", "happy", "sleepy", "dazed", "pleased", "default"],
+    enum: ["cute", "happy", "sleepy", "dazed", "pleased", "default"],
     description:
       "Strictly choose ONE from this exact list. DO NOT invent new words like 'shy'.",
   },
@@ -53,13 +59,7 @@ export const IMAGE_FIELDS: Record<string, ImageFieldDef> = {
     type: "string",
     enum: ["front", "side", "high_angle", "from_below", "boyfriend_view", "selfie", "mirror"],
     description:
-      "Strictly choose ONE from this exact list. Use 'selfie' if physically separated from the user, otherwise use POV angles like 'boyfriend_view' or 'front' if together.",
-  },
-  exposure: {
-    type: "string",
-    enum: ["normal", "cleavage", "see_through", "half_naked", "naked", "intimate"],
-    description:
-      "Strictly choose ONE from this exact list. Explicitly choose naked or half_naked if the active scene takes off outfit.",
+      "Strictly choose ONE from this exact list. Use 'selfie' if physically separated from the user; otherwise use an in-person angle such as 'boyfriend_view' (POV from the user's eyes), 'front', or 'side'.",
   },
   pose: {
     type: "string",

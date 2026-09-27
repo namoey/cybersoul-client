@@ -54,6 +54,13 @@ export type {
  * from the backend character state (PromptSegment key="COMPLIANCE_RULE").
  * Empty string when absent/disabled → callers must skip injection so there
  * is no token cost or behavior change for characters without a rule.
+ *
+ * NOTE: the compliance directive is intentionally DB-driven with NO
+ * client-side fallback — the platform-level rule is configured by admins
+ * in the backend PromptSegment store. Embedding default compliance text
+ * here would ship sensitive vocabulary inside consumer app binaries
+ * (the SDK is bundled into the RN/web apps), so keep this function a pure
+ * pass-through of backend state.
  */
 export function getComplianceDirective(state: CharacterState): string {
   const tpl = state.compliance_boundary?.promptTemplate?.trim();
@@ -179,7 +186,7 @@ export function getTriggerEventPolicyPrompt(): string {
 }
 export function getOutfitAcquisitionPolicyPrompt(): string {
   return `- Outfit acquisition (giftOutfit): set 'giftOutfit' to { "descriptionText": "short outfit description" } when a genuinely NEW outfit (one that is NOT already in the Available Wardrobe) is obtained THIS turn, triggered by EITHER:
-    (a) USER-GIFTED: the VERY LAST USER MESSAGE expresses gift/buy/add-clothes intent for you (e.g. "I bought you a dress", "here, wear this new outfit", "adding some lingerie to your closet").
+    (a) USER-GIFTED: the VERY LAST USER MESSAGE expresses gift/buy/add-clothes intent for you (e.g. "I bought you a dress", "here, wear this new outfit").
     (b) CHARACTER-ACQUIRED: the conversation or active event naturally leads YOU to acquire a new outfit you don't already own (e.g. you went shopping, received/made clothes, or the scene requires changing into a brand-new outfit that is absent from your Available Wardrobe).
   Keep 'descriptionText' to a concise English-or-matching-language description of the single new outfit. Otherwise set 'giftOutfit' to null. Do NOT fire it for outfits already present in the Available Wardrobe, and do NOT fire it just because you changed into an existing outfit.`;
 }
@@ -522,7 +529,7 @@ export function buildInteractModalitiesInstruction(
       (c) An active event JUST started or just hit a visually distinct new beat.
     REPETITION GATE (hard): Prior assistant turns that already carried a picture are tagged with a [Sent Image] marker in '[CHAT HISTORY]'. If at least one prior assistant turn has a [Sent Image] marker AND the current scene/outfit/pose matches the 'Last Known Scene' line (i.e. nothing visually new has happened since), set 'imageParams' to null. Do NOT send near-duplicate pictures just because mood is high — high Temperature is NOT a trigger by itself.
     PRIVACY GATE: Even when a trigger fires, if the user feels like a stranger (low Familiarity) OR your Mood/Temperature is cool/distant (< 50), set 'imageParams' to null and naturally decline. Temperature and Familiarity only GATE permission when a trigger has already fired; they never justify an image on their own.
-    When you do include 'imageParams', explicitly describe current clothing/exposure in the image fields.`;
+    When you do include 'imageParams', describe the character's current look in the image fields.`;
     } else {
       modalitiesInstruction += `\n  - ALWAYS set 'imageParams' to null. If the user explicitly asks for a picture, FIRMLY decline naturally in your 'textResponse' (e.g., say you absolutely cannot right now). NEVER pretend to send one, and NEVER give in no matter how many times they ask.`;
     }
@@ -540,7 +547,7 @@ export function buildInteractModalitiesInstruction(
     modalitiesInstruction = `You MUST return the requested modalities: ${requestedOthers.join(", ") || "only text"}.
   - 'textResponse' is ALWAYS REQUIRED.`;
     if (requestedOthers.includes(InteractRequestType.IMAGE)) {
-      modalitiesInstruction += `\n  - 'imageParams' is REQUIRED. Include it and explicitly describe current clothing/exposure in image fields.`;
+      modalitiesInstruction += `\n  - 'imageParams' is REQUIRED. Include it and describe the character's current look in image fields.`;
     } else {
       modalitiesInstruction += `\n  - ALWAYS set 'imageParams' to null. If the user explicitly asks for a picture, FIRMLY decline naturally in your 'textResponse' (e.g., say you absolutely cannot right now). NEVER pretend to send one, and NEVER give in no matter how many times they ask.`;
     }
@@ -638,7 +645,7 @@ ${modalitiesInstruction}
 [TURN BEHAVIOR — WHAT TO DO THIS TURN]
 Every turn you adjust trust: positive +1, negative -1, neutral 0. Reflect this as a small integer in your relationship temperature update.
 
-SCENE & OUTFIT: Track your current physical scene and what you're wearing. Keep the same outfit by default; change only if the scene implies changing clothes (e.g., going to bed, going out). If no clothing is worn, track that explicitly.
+SCENE & OUTFIT: Track your current physical scene and your current look. Keep the same look by default; update it only when the scene implies a change (e.g., getting ready for bed, heading out).
 
 USER ANALYSIS: Extract facts ONLY about the HUMAN USER from their VERY LAST MESSAGE. Do NOT extract facts about yourself.
 - Add only explicit new user facts from this turn (no inference).

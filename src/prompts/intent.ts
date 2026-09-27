@@ -55,7 +55,8 @@ export const STATE_FIELDS: Record<string, StateFieldHint> = {
 
 export const ONGOING_SCENE_FIELDS: Record<string, string> = {
   scene: "Current physical scene/activity",
-  outfit: "Current outfit wording; use 'naked' when applicable",
+  outfit:
+    "Character's current overall look — how they are presenting themselves right now",
 };
 
 // ── update_state (userAnalysis) ───────────────────────────────────

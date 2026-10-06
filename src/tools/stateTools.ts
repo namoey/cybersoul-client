@@ -128,7 +128,7 @@ export function buildUpdateStateTool(): Tool<
         },
         userAnalysis: {
           type: "object",
-          description: "Extract facts ONLY about the HUMAN USER from their VERY LAST MESSAGE. Do NOT extract facts about yourself. Exclude transient activities.",
+          description: "Extract facts ONLY about the HUMAN USER (the person you are talking TO) from their VERY LAST MESSAGE. NEVER extract facts about yourself — your own personality traits, hobbies, boundaries, communication style, or anything from your persona definition must NOT appear here. Exclude transient activities.",
           properties: {
             newFactsLearned: {
               type: "array",
@@ -144,6 +144,15 @@ export function buildUpdateStateTool(): Tool<
                   value: {
                     type: "string",
                     description: "The explicit new user fact from THEIR VERY LAST MESSAGE.",
+                  },
+                  subject: {
+                    type: "string",
+                    enum: ["user", "character"],
+                    description: "Who the fact is about. Anything describing the CHARACTER (you) must use 'character' — it is then ignored downstream.",
+                  },
+                  evidence: {
+                    type: "string",
+                    description: "Short verbatim quote copied EXACTLY from the user's very last message proving the fact. Copying it exactly forces you to ground every fact in the user's actual words — never invent, translate, or paraphrase.",
                   },
                 },
                 required: ["category", "value"],

@@ -519,6 +519,18 @@ export interface DispatcherIntent {
         | "boundary"
         | "preference";
       value: string;
+      /**
+       * Source anchoring (anti role-confusion): who the fact is about.
+       * Facts self-declared as "character" are dropped by the backend.
+       */
+      subject?: "user" | "character";
+      /**
+       * Source anchoring: verbatim quote from the user's very last
+       * message grounding the fact. The backend verifies the quote
+       * occurs in the message (language-agnostic) and drops facts whose
+       * "evidence" is fabricated. Optional for backward compatibility.
+       */
+      evidence?: string;
     }[];
   };
   stateUpdate?: {

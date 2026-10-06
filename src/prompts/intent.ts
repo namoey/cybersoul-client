@@ -92,5 +92,5 @@ export function buildStateUpdateJsonHint(): string {
 }
 
 export function buildUserAnalysisJsonHint(): string {
-  return `"userAnalysis": { "newFactsLearned": [{ "category": "${USER_ANALYSIS_CATEGORIES.join("|")}", "value": "explicit new user fact about the human from THEIR VERY LAST MESSAGE" }] }`;
+  return `"userAnalysis": { "newFactsLearned": [{ "category": "${USER_ANALYSIS_CATEGORIES.join("|")}", "value": "new fact about the HUMAN USER only, explicitly stated in their VERY LAST message — NEVER about you (the character)", "subject": "user or character — who the fact is about; anything describing YOURSELF must be character", "evidence": "short verbatim quote copied EXACTLY from the user's very last message proving the fact" }] }`;
 }

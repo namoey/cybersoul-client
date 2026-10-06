@@ -164,6 +164,47 @@ function runTests() {
         const result = robustJsonParse<any>(json);
         assert.equal(result.key, 'value');
       }
+    },
+    {
+      name: 'robustJsonParse - unescaped content quotes inside string values (prod incident 2026-10-06)',
+      run: () => {
+        // Model quoted the user's message inside actionText with raw ASCII
+        // double quotes → JSON.parse fails at that quote. The repair pass
+        // must escape content quotes (non-structural neighbors) and recover
+        // the FULL intent — not just salvage text fields.
+        const json = `{
+  "textResponse": "哼，谁让你昨天一直念我小气…这张凑合给你吧",
+  "actionText": "（盘腿坐在床边，看到那句"等了一晚上也没看到你的照片"，鼻子里先轻轻哼出一声。）",
+  "imageParams": { "mode": "structured", "expression": "sleepy" },
+  "userAnalysis": { "newFactsLearned": [{ "category": "preference", "value": "想看照片", "subject": "user", "evidence": "等了一晚上也没看到你的照片" }] },
+  "stateUpdate": { "temperatureDelta": 1 }
+}`;
+        const result = robustJsonParse<any>(json, 'incident repro');
+        assert.ok(result.textResponse.includes('凑合给你'));
+        assert.ok(result.actionText.includes('"等了一晚上也没看到你的照片"'));
+        assert.equal(result.imageParams.expression, 'sleepy');
+        assert.equal(result.userAnalysis.newFactsLearned[0].subject, 'user');
+        assert.equal(result.stateUpdate.temperatureDelta, 1);
+      }
+    },
+    {
+      name: 'robustJsonParse - repair does NOT touch already-valid JSON with escaped quotes',
+      run: () => {
+        const json = '{"textResponse":"他说\\"晚安\\"然后睡了","n":1}';
+        const result = robustJsonParse<any>(json);
+        assert.equal(result.textResponse, '他说"晚安"然后睡了');
+        assert.equal(result.n, 1);
+      }
+    },
+    {
+      name: 'robustJsonParse - fullwidth quotes inside values still parse (normalized to single quotes)',
+      run: () => {
+        const json = '{"actionText":"（看到那句“等了一晚上”，轻轻哼了一声。）"}';
+        const result = robustJsonParse<any>(json);
+        // Long-standing step-0.2 normalization: interior smart quotes → '
+        assert.ok(result.actionText.includes('等了一晚上'));
+        assert.ok(!result.actionText.includes('"'));
+      }
     }  ];
 
   for (const t of tests) {

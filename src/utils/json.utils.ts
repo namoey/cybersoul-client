@@ -109,6 +109,48 @@ export function robustJsonParse<T>(
     parsed = JSON.parse(cleanJson);
   } catch (e: any) {
     if (e instanceof SyntaxError) {
+      // Quote-repair pass: LLMs sometimes place UNESCAPED ASCII double
+      // quotes inside string values when quoting the user's words (e.g.
+      // 看到那句"等了一晚上…" inside actionText). That terminates the string
+      // early and nothing downstream can parse it. A '"' is CONTENT (not
+      // structural) when neither neighbor is a position where JSON structure
+      // can legally sit — escape exactly those and retry.
+      const repairContentQuotes = (str: string): string => {
+        const STRUCT_BEFORE = new Set([' ', '\t', '\n', '\r', ':', ',', '{', '[']);
+        const STRUCT_AFTER = new Set([' ', '\t', '\n', '\r', ':', ',', '}', ']']);
+        let out = '';
+        for (let i = 0; i < str.length; i++) {
+          const ch = str[i];
+          if (
+            ch === '"' &&
+            i > 0 &&
+            str[i - 1] !== '\\' && // already escaped — leave alone
+            !STRUCT_BEFORE.has(str[i - 1]) &&
+            i < str.length - 1 &&
+            !STRUCT_AFTER.has(str[i + 1])
+          ) {
+            out += '\\"';
+            continue;
+          }
+          out += ch;
+        }
+        return out;
+      };
+      if (cleanJson.includes('"')) {
+        // Re-run control-char preprocessing AFTER repair: the stray quote
+        // had flipped preprocessControlChars' in-string tracking, so raw
+        // newlines inside the affected value may still be unescaped.
+        const repaired = preprocessControlChars(repairContentQuotes(cleanJson));
+        if (repaired !== cleanJson) {
+          try {
+            parsed = JSON.parse(repaired);
+            return parsed as T;
+          } catch (err) {
+            // repair insufficient — fall through to the suffix chain
+          }
+        }
+      }
+
       // Basic fallback: retry by appending missing closures for truncated LLM sequences
       const suffixes = ['}', '}}', '}}}', ']}', '}]}', '"}}', '"}}}', '"]}', '"]}}'];
       for (const suffix of suffixes) {

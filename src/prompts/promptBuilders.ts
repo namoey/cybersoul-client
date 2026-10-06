@@ -684,7 +684,7 @@ export function buildInteractUserMessage(params: {
     harnessContext +
     transcript +
     `[VERY LAST USER MESSAGE]\n${userName}: ${userMessage}\n\n` +
-    "\n\nReturn only valid JSON matching the schema. Escape newlines inside JSON strings with \\n. Keep imageParams values in ENGLISH and use the provided enums."
+    "\n\nReturn only valid JSON matching the schema. Escape newlines inside JSON strings with \\n. NEVER place an unescaped double quote (\") inside a string value — when quoting the user's words inside a value, use 「」 or fullwidth “ ” instead. Keep imageParams values in ENGLISH and use the provided enums."
   );
 }
 
@@ -1025,7 +1025,7 @@ Output strictly valid JSON ONLY. No markdown, no conversational filler. Return e
   ${getImageSchemaParams(true)}
 }`;
 
-  const userContent = `${transcript}Scene Description: "${sceneDescription}"\n\n**CRITICAL REMINDER**: You MUST output your final response exactly in the JSON format specified in the system prompt. DO NOT output plain text dialogue directly. CRITICAL: You must properly escape all newlines inside string values using \\n. Never use raw, unescaped line breaks inside the JSON strings. For 'imageParams', ALL values MUST be in ENGLISH ONLY without exception, and you MUST use the exact English enum strings provided.`;
+  const userContent = `${transcript}Scene Description: "${sceneDescription}"\n\n**CRITICAL REMINDER**: You MUST output your final response exactly in the JSON format specified in the system prompt. DO NOT output plain text dialogue directly. CRITICAL: You must properly escape all newlines inside string values using \\n, and NEVER place an unescaped double quote (\") inside a string value — when quoting the user's words inside a value, use 「」 or fullwidth “ ” instead. Never use raw, unescaped line breaks inside the JSON strings. For 'imageParams', ALL values MUST be in ENGLISH ONLY without exception, and you MUST use the exact English enum strings provided.`;
 
   return [
     { role: "system", content: systemPrompt },
@@ -1054,7 +1054,7 @@ Output strictly valid JSON ONLY. No markdown, no conversational filler. Return e
   ${getVoiceSchemaFromState(state, true)}
 }`;
 
-  const userContent = `${transcript}Text: "${text}"\n\n**CRITICAL REMINDER**: You MUST output your final response exactly in the JSON format specified in the system prompt. DO NOT output plain text dialogue directly. CRITICAL: You must properly escape all newlines inside string values using \\n. Never use raw, unescaped line breaks inside the JSON strings.`;
+  const userContent = `${transcript}Text: "${text}"\n\n**CRITICAL REMINDER**: You MUST output your final response exactly in the JSON format specified in the system prompt. DO NOT output plain text dialogue directly. CRITICAL: You must properly escape all newlines inside string values using \\n, and NEVER place an unescaped double quote (\") inside a string value — when quoting the user's words inside a value, use 「」 or fullwidth “ ” instead. Never use raw, unescaped line breaks inside the JSON strings.`;
 
   return [
     { role: "system", content: systemPrompt },

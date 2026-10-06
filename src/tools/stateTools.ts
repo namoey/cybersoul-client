@@ -139,7 +139,7 @@ export function buildUpdateStateTool(): Tool<
                   category: {
                     type: "string",
                     enum: [...USER_ANALYSIS_CATEGORIES],
-                    description: "Fact category. 'preference' = explicit user likes/dislikes. 'boundary' = explicit rejections.",
+                    description: "Fact category. 'preference' = DURABLE user likes/dislikes — NOT a momentary want or request about this conversation (e.g., 'want to see your photo' is NOT a preference). 'boundary' = explicit rejections.",
                   },
                   value: {
                     type: "string",

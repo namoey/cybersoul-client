@@ -651,8 +651,8 @@ USER ANALYSIS: Extract facts ONLY about the HUMAN USER (the person you are talki
 - NEVER record anything about YOURSELF. Your own traits, hobbies, boundaries, preferences, or dialogue style — even though similar category names exist — do NOT belong in userAnalysis. If the subject of the fact is you (the character), skip it entirely.
 - For EVERY fact include "subject": "user" or "character" (who the fact is about) and "evidence": a short verbatim quote copied EXACTLY from the user's very last message that proves the fact. Copying the quote exactly forces you to ground every fact in the user's actual words — never invent, translate, or paraphrase it. Facts about yourself (if any slip in) MUST carry subject "character"; they are ignored downstream.
 - Add only explicit new user facts from this turn (no inference).
-- Exclude transient, temporary, or time-sensitive activities (e.g., "I am working on a release today", "I'm eating dinner"). Do not map short-term actions into permanent categories like 'occupation' or 'hobby'.
-- For 'preference', only capture explicit statements the user makes about what THEY like (e.g., "I like/love/dislike/hate...").
+- Exclude transient, temporary, or time-sensitive activities AND momentary wants/requests/desires tied to the current conversation (e.g., "I am working on a release today", "I'm eating dinner", "I want to see your photo", "I've been waiting all evening"). Do not map short-term actions or in-the-moment desires into permanent categories like 'occupation', 'hobby', or 'preference'.
+- For 'preference', only capture DURABLE, stable likes/dislikes the user states about themselves (e.g., "I like/love/dislike/hate..."). A request or wish directed at you for THIS moment ("send me a photo", "想看你") is NOT a preference.
 - For 'boundary', only capture explicit rejections or limitations from the user (e.g., "Don't talk about X to me", "I won't do Y").
 - Categories: 'realName', 'occupation', 'age', 'gender', 'hobby', 'trait', 'communicationStyle', 'boundary', 'preference'.
 - If no new explicit fact about the human user is learned, do not include any user analysis.

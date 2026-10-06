@@ -1,4 +1,4 @@
-import { robustJsonParse } from './json.utils.js';
+import { robustJsonParse, decodeLiteralEscapes } from './json.utils.js';
 
 const assert = {
   equal: (a: any, b: any) => {
@@ -204,6 +204,17 @@ function runTests() {
         // Long-standing step-0.2 normalization: interior smart quotes → '
         assert.ok(result.actionText.includes('等了一晚上'));
         assert.ok(!result.actionText.includes('"'));
+      }
+    },
+    {
+      name: 'decodeLiteralEscapes - literal \\n becomes a real newline (prod ask 2026-10-06)',
+      run: () => {
+        // LLMs sometimes double-escape: parsed value holds the two-char
+        // text "\n" which apps render literally. Downstream text fields
+        // are decoded so real line breaks render.
+        assert.equal(decodeLiteralEscapes('第一行\\n第二行'), '第一行\n第二行');
+        assert.equal(decodeLiteralEscapes('a\\r\\nb'), 'a\nb');
+        assert.equal(decodeLiteralEscapes('no escapes'), 'no escapes');
       }
     }  ];
 

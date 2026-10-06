@@ -20,7 +20,7 @@ import {
   SupportedLLMModel,
 } from "./types.js";
 import { supportsStreaming, supportsToolCalling } from "./types.js";
-import { robustJsonParse } from "./utils/json.utils.js";
+import { robustJsonParse, decodeLiteralEscapes } from "./utils/json.utils.js";
 import { GenericLLMProvider } from "./llm.provider.js";
 import { CyberSoulError } from "./errors.js";
 import {
@@ -560,7 +560,7 @@ export class CyberSoulClient {
   ): string {
     return typeof parsedIntent.textResponse === "string" &&
       parsedIntent.textResponse.trim().length > 0
-      ? parsedIntent.textResponse
+      ? decodeLiteralEscapes(parsedIntent.textResponse)
       : userMessage;
   }
 
@@ -878,7 +878,7 @@ export class CyberSoulClient {
       return {
         status: "success",
         textResponse: resolvedTextResponse || "...",
-        actionText: parsedIntent.actionText || "",
+        actionText: decodeLiteralEscapes(parsedIntent.actionText || ""),
         // When the loop dispatched media inline, the side-effect layer
         // skipped those tools. Use the loop's captured results so the
         // final response carries the correct URLs. Fall back to the

@@ -58,6 +58,7 @@
 
 import type { DispatcherIntent } from "../types.js";
 import type { LLMToolCall } from "../types.js";
+import { decodeLiteralEscapes } from "../utils/json.utils.js";
 
 /**
  * Fold a list of tool calls into a `DispatcherIntent`. Pure function —
@@ -93,8 +94,10 @@ export function toolCallsToIntent(toolCalls: LLMToolCall[]): DispatcherIntent {
 
     switch (call.name) {
       case "speak": {
-        if (typeof args.text === "string") intent.textResponse = args.text;
-        if (typeof args.actionText === "string") intent.actionText = args.actionText;
+        // Decode literal \n the model double-escaped in tool args so the
+        // app renders real line breaks instead of the characters \n.
+        if (typeof args.text === "string") intent.textResponse = decodeLiteralEscapes(args.text);
+        if (typeof args.actionText === "string") intent.actionText = decodeLiteralEscapes(args.actionText);
         break;
       }
       case "generate_image": {

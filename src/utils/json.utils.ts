@@ -1,3 +1,15 @@
+/**
+ * Convert literal escape sequences (the two-char text "\n") that LLMs
+ * emit via double-escaping into REAL control characters, so chat text
+ * renders actual line breaks instead of the visible characters \n.
+ * Scope is deliberately limited to newline forms (\r\n, \n); other
+ * escapes are left untouched.
+ */
+export function decodeLiteralEscapes(text: string): string {
+  if (typeof text !== 'string' || !text.includes('\\')) return text;
+  return text.replace(/\\r\\n/g, '\n').replace(/\\n/g, '\n');
+}
+
 export function robustJsonParse<T>(
   jsonString: string, 
   contextMessage: string = 'throwing original error',

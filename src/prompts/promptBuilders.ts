@@ -318,8 +318,15 @@ Current time: ${timeStr} (${period})`);
     if (mem.keyEvents?.length)
       memoryLines.push(`Key Events: ${mem.keyEvents.join(", ")}`);
     if (mem.appointments?.length) {
+      const renderedAppointments = mem.appointments
+        .map((a) => {
+          const when = a.date ? `[${a.date}${a.time ? " " + a.time : ""}] ` : "";
+          const context = a.context ? ` — ${a.context}` : "";
+          return `${when}${a.title} with ${a.withWhom || "User"}${context}`;
+        })
+        .join("; ");
       memoryLines.push(
-        `Appointments: ${mem.appointments.map((a) => `[${a.date || ""} ${a.time || ""}] ${a.title} with ${a.withWhom || "User"}`).join("; ")}`,
+        `Appointments (pending plans — background reference only; surface in dialogue ONLY when the user brings them up or the scheduled moment genuinely arrives, never as a recurring reminder): ${renderedAppointments}`,
       );
     }
     if (memoryLines.length > 1) {
@@ -443,7 +450,8 @@ ${
     : "5. REAL-TIME PACING: Write ONLY your immediate, split-second reaction to the user's exact last message. Do NOT narrate actions over a span of time (e.g., waiting, hearing steps, then walking to the door). Ensure everything happens in a single real-time moment."
 }
 6. STRANGER BOUNDARY: Keep a polite, natural distance with strangers. If Familiarity is low or Stage is STRANGER, do not act overly warm, eager, or affectionate. Real humans are guarded with people they just met.
-7. LANGUAGE MATCHING: You MUST generate your responses and actions in the EXACT SAME LANGUAGE as the user's chat.`;
+7. LANGUAGE MATCHING: You MUST generate your responses and actions in the EXACT SAME LANGUAGE as the user's chat.
+8. MEMORY USAGE (ANTI-NAGGING): [CORE MEMORY], [RECENT MOMENTS], and pending appointments are background knowledge, NOT a checklist to recite or prove you remember. Mention a stored item ONLY when (a) the user's current message directly touches it, or (b) its natural moment arrives (e.g. an appointment's time actually comes due). TOPIC REPETITION GATE (hard): before writing, scan YOUR OWN recent lines in [CHAT HISTORY] — if any of your last ~3 replies already leaned on the same callback (a pending promise, a debt, an inside joke, an unanswered question, a tease), that thread is EXHAUSTED: do not mention or escalate it again this turn, even playfully. Real people let threads rest. When you DO reference a memory, at most one per message — zero is the default. NEVER invent escalating pressure (deadlines, interest, tally-keeping, score-keeping) around a casual promise.`;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -938,6 +946,9 @@ Your task is to merge the 'Current Core Memory' and 'Current User Codex' with 'N
 1. **Condense:** Keep items brief. Remove resolving or expired story arcs.
 2. **Retain Value:** Never delete the absolute core identity or major relationship milestones.
 3. **Time-Aware Garbage Collection:** Compare the Current Time to appointments. You MUST remove any appointments that are in the past. If the completed appointment was heavily significant, summarize it into 'keyEvents', preserving its original scheduled date (e.g. "[2026-06-23] Had coffee with Alice").
+   - **Fulfilled/Cancelled Promises:** If the new events show a pending promise or appointment was fulfilled, delivered, or cancelled (e.g. the user finally brought the promised coffee), remove it from 'appointments'. Keep at most a single 'keyEvents' trace, and only if it was genuinely significant.
+   - **Casual Micro-Promises Are NOT Appointments:** Vague, undated, low-stakes promises ("I'll buy you a coffee sometime", "I owe you a treat") must NOT be stored as appointments — an appointment requires a concrete agreed date and time. Record them at most as one 'keyEvents' line, or omit them entirely.
+   - **Stale Undated Cleanup:** Remove any appointment entry that carries no date AND was not re-confirmed in the new events — it is stale.
 4. **keyEvents Date Format:** Whenever a date can be derived for a key event (from the 'New Events & Information' timestamp prefix like "[YYYY-MM-DD HH:MM]", from a completed appointment's date, or from explicit time references in the text), you MUST prefix the keyEvent string with "[YYYY-MM-DD] ". If no date can be derived, write the event without a prefix. Never fabricate a date.
 5. **Appointment Structure:** the 'title' and 'context' MUST explicitly state what to do and with whom.
 6. **Limit:** Maximum 10 items per array.

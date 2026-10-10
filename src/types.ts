@@ -142,6 +142,13 @@ export interface InteractMetadata {
   userAnalysis?: DispatcherIntent["userAnalysis"];
   isEndTurn?: boolean;
   triggerEvent?: DispatcherIntent["triggerEvent"];
+  /**
+   * Dispatcher-LLM follow-up estimate for this turn — see
+   * [DispatcherIntent.followUpInMins]. Surfaced on the early metadata
+   * so frontends can schedule the dynamic proactive trigger before
+   * media generation finishes.
+   */
+  followUpInMins?: number | null;
   likePreviousPicture?: boolean;
   /**
    * True when the client has already decided to dispatch a voice
@@ -269,6 +276,12 @@ export interface ProactiveResponse {
   stateUpdate?: DispatcherIntent["stateUpdate"];
   /** Server-authoritative post-write snapshot (see PersistedDynamicContext). */
   persistedDynamicContext?: PersistedDynamicContext;
+  /**
+   * Dispatcher-LLM follow-up estimate for this turn — see
+   * [DispatcherIntent.followUpInMins]. Lets proactive schedulers arm
+   * a dynamic follow-up trigger without re-parsing the reply text.
+   */
+  followUpInMins?: number | null;
   /** Partial-failure descriptor: text was generated successfully but one or
    * more media calls (image/voice) failed. Surfaced in-band so the caller
    * can still render the text reply and explain the missing media
@@ -451,6 +464,12 @@ export interface InteractResponse {
     durationMins?: number;
     outfitId?: string | null;
   };
+  /**
+   * Dispatcher-LLM follow-up estimate for this turn — see
+   * [DispatcherIntent.followUpInMins]. Lets proactive schedulers arm
+   * a dynamic follow-up trigger without re-parsing the reply text.
+   */
+  followUpInMins?: number | null;
   stateUpdate?: DispatcherIntent["stateUpdate"];
   userAnalysis?: DispatcherIntent["userAnalysis"];
   isEndTurn?: boolean;
@@ -548,6 +567,16 @@ export interface DispatcherIntent {
     scheduledStartTimeStr?: string | null;
     scheduledDateStr?: string | null;
   } | null;
+  /**
+   * Dispatcher-LLM decision: the character is stepping away mid-activity
+   * with a promised comeback ("I'm cooking, give me a few minutes") and
+   * should dynamically reach out again after this many minutes.
+   * Decimals allowed (0.5 ≈ 30s). Null when no follow-up is owed —
+   * which is the common case. Consumed by proactive schedulers
+   * (e.g. cybersoul-chat's ProactiveManager) to arm an early,
+   * gate-exempt proactive trigger.
+   */
+  followUpInMins?: number | null;
   isEndTurn?: boolean;
 }
 

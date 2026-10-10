@@ -49,6 +49,7 @@ import {
   getDefaultCoreMemory,
   getDefaultUserCodex,
 } from "./utils/state.utils.js";
+import { normalizeFollowUpInMins } from "./utils/followUp.utils.js";
 import { buildMediaError } from "./utils/error.utils.js";
 import { parseImageDirectorArgs } from "./utils/image.utils.js";
 import { CyberSoulApi } from "./api/cyberSoulApi.js";
@@ -585,6 +586,7 @@ export class CyberSoulClient {
           userAnalysis: parsedIntent.userAnalysis,
           isEndTurn: parsedIntent.isEndTurn,
           triggerEvent: parsedIntent.triggerEvent,
+          followUpInMins: normalizeFollowUpInMins(parsedIntent.followUpInMins),
           likePreviousPicture: parsedIntent.likePreviousPicture,
           willGenerateVoice,
         },
@@ -893,6 +895,7 @@ export class CyberSoulClient {
         // to match the legacy response shape — the tool's `triggered` return
         // value is for Phase 2 observability only.
         triggeredEvent: parsedIntent.triggerEvent || undefined,
+        followUpInMins: normalizeFollowUpInMins(parsedIntent.followUpInMins),
         stateUpdate: parsedIntent.stateUpdate,
         userAnalysis: parsedIntent.userAnalysis,
         isEndTurn: parsedIntent.isEndTurn,
@@ -1066,7 +1069,12 @@ export class CyberSoulClient {
           type: "text-ready",
           text: parsedIntent.textResponse,
           actionText: parsedIntent.actionText,
-          metadata: { stateUpdate: parsedIntent.stateUpdate },
+          metadata: {
+            stateUpdate: parsedIntent.stateUpdate,
+            followUpInMins: normalizeFollowUpInMins(
+              parsedIntent.followUpInMins,
+            ),
+          },
         });
       }
 
@@ -1097,6 +1105,7 @@ export class CyberSoulClient {
         imageMediaId: imageResult.imageMediaId,
         stateUpdate: parsedIntent.stateUpdate,
         persistedDynamicContext,
+        followUpInMins: normalizeFollowUpInMins(parsedIntent.followUpInMins),
         mediaError,
         giftedOutfit,
       };

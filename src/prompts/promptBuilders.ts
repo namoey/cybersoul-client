@@ -623,13 +623,14 @@ When you DO skip: ${embedJsonSchemaHint ? 'set the field named EXACTLY "shouldSk
   "giftOutfit": { "descriptionText": "${GIFT_OUTFIT_DESCRIPTION_TEXT_DESCRIPTION}" },
   ${buildUserAnalysisJsonHint()},
   "isEndTurn": false,
+  "followUpInMins": null,
   "triggerEvent": {
     ${getEventSchemaParams(state.dynamic_context?.userNickname)}
   },
   ${getImageSchemaParams(requestedOthers.includes(InteractRequestType.IMAGE))},
   ${getVoiceSchemaFromState(state, requestedOthers.includes(InteractRequestType.VOICE))}
 }
-Note: Always include "isEndTurn". If "imageParams", "voiceArgs", "triggerEvent", "giftOutfit", or "userAnalysis" are not needed, set them to null. "stateUpdate" cannot be null.${allowSkip ? ' To skip, use the EXACT field name "shouldSkipInteract" (never "skip" or any shorthand) set to true, with "skipReason" as one short sentence, and set EVERY other field to null (no textResponse, no stateUpdate, no media).' : ''} Return valid raw JSON only.`
+Note: Always include "isEndTurn". If "imageParams", "voiceArgs", "triggerEvent", "giftOutfit", "userAnalysis", or "followUpInMins" are not needed, set them to null. "stateUpdate" cannot be null.${allowSkip ? ' To skip, use the EXACT field name "shouldSkipInteract" (never "skip" or any shorthand) set to true, with "skipReason" as one short sentence, and set EVERY other field to null (no textResponse, no stateUpdate, no media).' : ''} Return valid raw JSON only.`
     : "";
 
   // The intro line differs between paths:
@@ -666,6 +667,8 @@ USER ANALYSIS: Extract facts ONLY about the HUMAN USER (the person you are talki
 - If no new explicit fact about the human user is learned, do not include any user analysis.
 
 TURN CLOSURE: Indicate whether the interaction naturally concludes (confirmation/bye, event ending, or clear hard scene shift).
+
+FOLLOW-UP SCHEDULING ('followUpInMins'): Set it when this reply creates an expectation that you will message the user again on your own, soon. Two cases: (a) you defer something or step away mid-activity while the user is engaged — e.g. "I'm cooking, give me a few minutes", "hold on, let me check something", "almost done, I'll show you when I'm back"; (b) the user EXPLICITLY asks you to message them later — e.g. "text me in 5 minutes", "ping me when you're done", "5分钟后给我发消息" — in which case use the delay they asked for. Estimate realistically how many minutes until that message (decimals allowed, e.g. 0.5 ≈ 30 seconds; the app schedules your message at that time).${embedJsonSchemaHint ? " Emit it as the top-level \"followUpInMins\" JSON field." : " Pass it as the \"followUpInMins\" argument of the update_state tool."} Leave it unset/null when the deferral is for a later day or a scheduled appointment (those are not near-term follow-ups), or when no comeback is implied.
 
 PICTURE LIKES: If the user explicitly praises, loves, or stars the VERY LAST picture you sent (not general appearance, but the recent photo itself), indicate that.
 
@@ -726,6 +729,7 @@ export function buildProactiveSystemPrompt(
     ? `Output ONLY a valid JSON object matching exactly this structure (no markdown wrappers).
 To skip, use the EXACT field name "shouldSkipProactive" (the full camelCase name — never "skip" or any shorthand) set to true, with "skipReason" as one short sentence, and set every other field to null.
 If "shouldSkipProactive" is false, "textResponse" is required and "stateUpdate" must be provided; include "ongoingScene" only if your scene/outfit actually changed, otherwise omit it.
+Set "followUpInMins" to a realistic number of minutes when this reply leaves something pending that you will naturally message about soon: you are still mid-activity and will check back in ("almost done, two more minutes"), or you promised the user a specific check-in time they asked for. Decimals allowed (0.5 ≈ 30 seconds; the app schedules your next message at that time). Otherwise set it to null.
 {
   "shouldSkipProactive": false,
   "skipReason": null,
@@ -734,9 +738,10 @@ If "shouldSkipProactive" is false, "textResponse" is required and "stateUpdate" 
   "stateUpdate": { "temperatureDelta": 0, "ongoingScene": { "scene": "...", "outfit": "..." } },
   "giftOutfit": { "descriptionText": "Concise description of the newly acquired outfit to add into wardrobe." },
   ${getImageSchemaParams(imageAllowed)},
+  "followUpInMins": null,
   "voiceArgs": null
 }`
-    : `Decide whether to reach out using the available tools. If you decide to reach out, use the "speak" tool for your message + action text. If you decide NOT to reach out, use the "skip_proactive" tool — exactly that literal name, never abbreviated to "skip" or anything else. Do NOT output JSON or plain text as your message content — always use the tools.`;
+    : `Decide whether to reach out using the available tools. If you decide to reach out, use the "speak" tool for your message + action text. If you decide NOT to reach out, use the "skip_proactive" tool — exactly that literal name, never abbreviated to "skip" or anything else. Do NOT output JSON or plain text as your message content — always use the tools. If this reply leaves something pending that you will naturally message about soon ("almost done, two more minutes", or a check-in time the user asked for), pass the estimated minutes as the "followUpInMins" argument of update_state.`;
 
   return `${baseContext}
 
@@ -757,6 +762,7 @@ When in doubt: SKIP. The bar for reaching out is high.
 
 [IF YOU DO DECIDE TO REACH OUT]
 This is SELF-INITIATED outreach, NOT a reply. There is NO pending message waiting for you — the user has been silent since the last line of [CHAT HISTORY]. Do not pick up mid-conversation, do not answer an implicit question, do not continue your own previous turn as if the user just engaged. Imagine you picked up your phone on your own, unprompted, after going about your own life for a while, and decided to text first.
+EXCEPTION — promised follow-up: if [ADDITIONAL SCENE CONTEXT] carries a "PROMISED FOLLOW-UP" system note, that note TAKES PRECEDENCE over this framing — you are completing a beat you already started (coming back from a mid-activity step-away), not starting outreach. In that case reaching out is the natural, expected choice.
 
 Connect naturally to the last topic or to your current scene/event. Don't open with a generic "are you there?" filler — but questions like "why haven't you replied?" or "did I say something wrong?" ARE allowed when genuinely motivated (you reached out last and got no answer, your traits/mood would make you feel slighted or anxious, etc.) — that's real personality, not filler.
 

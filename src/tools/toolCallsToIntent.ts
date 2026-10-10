@@ -25,8 +25,8 @@
  *                                  the legacy dispatcher didn't carry
  *                                  it either)
  *
- *   update_state({ stateUpdate, userAnalysis })
- *     → stateUpdate, userAnalysis
+ *   update_state({ stateUpdate, userAnalysis, followUpInMins })
+ *     → stateUpdate, userAnalysis, followUpInMins
  *
  *   trigger_event({ ... })
  *     → triggerEvent
@@ -122,6 +122,9 @@ export function toolCallsToIntent(toolCalls: LLMToolCall[]): DispatcherIntent {
         }
         if (args.userAnalysis && typeof args.userAnalysis === "object") {
           intent.userAnalysis = args.userAnalysis as DispatcherIntent["userAnalysis"];
+        }
+        if (typeof args.followUpInMins === "number") {
+          intent.followUpInMins = args.followUpInMins;
         }
         break;
       }

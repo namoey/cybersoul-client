@@ -80,6 +80,7 @@ export function buildUpdateStateTool(): Tool<
   {
     stateUpdate?: DispatcherIntent["stateUpdate"];
     userAnalysis?: DispatcherIntent["userAnalysis"];
+    followUpInMins?: number | null;
   },
   UpdateStateResult
 > {
@@ -90,6 +91,11 @@ export function buildUpdateStateTool(): Tool<
     inputSchema: {
       type: "object",
       properties: {
+        followUpInMins: {
+          type: ["number", "null"],
+          description:
+            "Schedule a near-term follow-up: set when THIS reply creates an expectation that you will message the user again on your own soon — you step away mid-activity ('I'm cooking, give me a few minutes') or the user explicitly asks you to message them later ('text me in 5 minutes', '5分钟后给我发消息' — use the delay they asked for). Realistic minutes until that message (decimals allowed, 0.5 ≈ 30s; the app sends your message at that time). Null for later-day deferrals / scheduled appointments / no comeback implied.",
+        },
         stateUpdate: {
           type: "object",
           description: "Relationship temperature, scene, nicknames. Cannot be null.",
